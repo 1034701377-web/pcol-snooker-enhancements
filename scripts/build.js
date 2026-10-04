@@ -9,7 +9,7 @@ const header = `// ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
 // @version      ${version}
-// @description  Local hot-seat snooker with touching-ball rulings, automatic colour nomination and foul replay.
+// @description  Snooker rules, century celebrations, custom practice layouts and stroke retry.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
 // @run-at       document-start
@@ -21,7 +21,8 @@ const header = `// ==UserScript==
 `;
 const core = read('src/rules-core.js').replace(/\nmodule\.exports = PCOLCore;\s*$/,'\n');
 const celebration = read('src/celebration.js').replace(/\nmodule\.exports = PCOLCelebration;\s*$/,'\n');
+const practice = read('src/practice-editor.js').replace(/\nmodule\.exports = PCOLPractice;\s*$/,'\n');
 const integration = read('src/integration.js').replaceAll('__PCOL_VERSION__',JSON.stringify(version));
 fs.mkdirSync(path.join(root,'outputs'),{recursive:true});
-fs.writeFileSync(path.join(root,'outputs/pcol-rules-patch.user.js'),header+'(() => {\n'+core+'\n'+celebration+'\n'+integration+'\n})();\n','utf8');
+fs.writeFileSync(path.join(root,'outputs/pcol-rules-patch.user.js'),header+'(() => {\n'+core+'\n'+celebration+'\n'+practice+'\n'+integration+'\n})();\n','utf8');
 console.log(`Built PCOL ${version}`);

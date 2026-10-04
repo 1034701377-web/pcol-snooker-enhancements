@@ -1,13 +1,14 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),{EventEmitter}=require('node:events');
 const core=require('../src/rules-core');
+const practice=require('../src/practice-editor');
 const modelSource=require('./fixtures/pcol-model');
 const {version}=require('../package.json');
 // Execute the original game model; stub only rendering and stationary physics.
 const Model=vm.runInNewContext('('+modelSource+')',{f:EventEmitter,Te:{a:{NO_GAME:1,PENDING:2,READY:4,SIMULATING:8,JUDGING:16,ERROR:32}},o:{a:{makeGContext:()=>({ballOn:2,inHand:0,nRounds:0,playerIndex:1}),makeRefResult:()=>({score:0,foulCode:0})}}});
 class Element{
   constructor(tag='div'){this.tag=tag;this.children=[];this.style={};this.hidden=false;}
-  set innerHTML(value){this.children=[];for(const name of ['bar','drag','status','hotseat','choose','concede','modal']){const e=new Element(name==='status'?'span':['bar','modal'].includes(name)?'div':'button');e.className=name;this.append(e);}}
+  set innerHTML(value){this.children=[];for(const name of ['bar','drag','status','hotseat','practice','edit','retry','choose','concede','modal']){const e=new Element(name==='status'?'span':['bar','modal'].includes(name)?'div':'button');e.className=name;this.append(e);}}
   append(...es){this.children.push(...es);}appendChild(e){this.append(e);return e;}replaceChildren(...es){this.children=es;}
   setAttribute(name,value){this[name]=value;}addEventListener(){}focus(){}remove(){this.removed=true;}
   attachShadow(){return this.shadow=new Element();}
@@ -21,12 +22,12 @@ function setup(score=55){
   const sim={_world:world,_nPhxAwakened:0,nAwakened:0,evolution:1,ballRadius:.02625,result:{pottedIndices:[],outOfBoundsIndices:[]},getBalls:()=>bs,getBallAtIndex:i=>bs[i],getCueBallPosition:()=>bs[0].position,stroke(velocity){if(velocity)Object.assign(bs[0].v,velocity);},clearResult(){this.result.pottedIndices=[];this.result.outOfBoundsIndices=[];},save(){},reset(){this.clearResult();return this;}};
   model._locRef={_liveRespot(){},_liveRespotCueBall(){},resetGContext(ctx){ctx.ballOn=2;ctx.inHand=0;}};
   let endings=0;model.on('response',()=>{if(model._gContext.ballOn===0)endings++;});
-  const fpc={_gPlayerIndex:0,get gPlayerIndex(){return this._gPlayerIndex;},gotoState0(){},markForceUpdate(){}},g={_model:model,_simulator:sim,_fpc:fpc,_playerCtls:[fpc,{gPlayerIndex:1,deactivate(){},release(){}}],_paused:false,_gView:{canvas:{focus(){}},syncBalls(){}},_uiLayer:{closeMessage(){}}};
+  const fpc={_gPlayerIndex:0,get gPlayerIndex(){return this._gPlayerIndex;},gotoState0(){},markForceUpdate(){}},g={_model:model,_simulator:sim,_fpc:fpc,_playerCtls:[fpc,{gPlayerIndex:1,deactivate(){},release(){}}],_paused:false,_gView:{canvas:{focus(){}},syncBalls(){}},_movieClip:{erase(){}},_uiLayer:{closeMessage(){}}};
   const app={constructor:{VERSION:'0.1.0.03152018'},_controllers:{game:g},_currentController:g,onCurrentControllerStateChanged(){}};
   const window={addEventListener(){},removeEventListener(){}},document={documentElement:new Element(),createElement:tag=>new Element(tag)};
   const integration=fs.readFileSync(require.resolve('../src/integration.js'),'utf8').replaceAll('__PCOL_VERSION__',JSON.stringify(version));
   const celebrations=[];
-  vm.runInNewContext(integration,{window,document,PCOLCore:core,PCOLCelebration:{create:()=>({show:data=>celebrations.push(data),clear(){},destroy(){}})},console});
+  vm.runInNewContext(integration,{window,document,PCOLCore:core,PCOLPractice:practice,PCOLCelebration:{create:()=>({show:data=>celebrations.push(data),clear(){},destroy(){}})},console});
   const s=window.PCOLPatch.attach(app,{c:{}}),api=window.PCOLPatch;
   function stroke({player=1,pot=false,miss=false}={}){
     model._gContext.playerIndex=player;if(s.hotseat)model._response(sim);assert.equal(model.reportPlayerStroke(player),true);
@@ -46,6 +47,47 @@ test('a century is celebrated on the scoring stroke once, never on response or f
   t.model._gContext.ballOn=2;t.sim.getBallAtIndex(1).active=true;t.sim.clearResult();t.stroke({pot:true});
   assert.equal(t.players[1].brk,101);assert.equal(t.celebrations.length,1);
   const foul=setup(0);foul.players[1].brk=99;foul.stroke({miss:true});assert.equal(foul.celebrations.length,0);
+});
+
+test('standard practice retries a pot or foul with the entire table and score counters restored',()=>{
+  for(const miss of [false,true]){
+    const t=setup(0);t.players.splice(1);t.s.practice='standard';t.model._gContext.playerIndex=0;t.model._gContext.inHand=0;
+    Object.defineProperty(t.players[0],'maxbrk',{get(){return this._maxBrk;}});t.players[0]._maxBrk=99;t.players[0].brk=99;
+    const context={...t.model._gContext},cue={...t.sim.getBallAtIndex(0).position};
+    t.stroke({player:0,pot:!miss,miss});t.sim.getBallAtIndex(0).position.x+=.2;
+    assert.equal(t.api.getStatus().canRetryPractice,true);assert.equal(t.s.shadow.querySelector('.retry').disabled,false);
+    assert.equal(t.api.retryPractice(),true);assert.deepEqual(t.model._gContext,context);assert.deepEqual(t.sim.getBallAtIndex(0).position,cue);
+    assert.equal(t.sim.getBallAtIndex(1).active,true);assert.equal(t.players[0].pts,0);assert.equal(t.players[0].penalty,0);assert.equal(t.players[0].brk,99);assert.equal(t.players[0].maxbrk,99);assert.equal(t.players[0].shootingCount,0);
+    assert.equal(t.api.retryPractice(),false);assert.equal(t.model.reportPlayerStroke(0),true);assert.equal(t.api.retryPractice(),false);
+  }
+});
+
+test('free practice leaves potted targets off the table and can retry consecutive shots',()=>{
+  const t=setup(0);t.players.splice(1);t.s.practice='custom';t.model._gContext.playerIndex=0;t.model._gContext.ballOn=65535;
+  for(let attempt=0;attempt<2;attempt++){
+    t.stroke({player:0,pot:true});assert.equal(t.sim.getBallAtIndex(1).active,false);assert.equal(t.s.shot,null);
+    assert.equal(t.api.getStatus().lastResult.pottedCount,1);assert.equal(t.players[0].pts,0);assert.equal(t.model._gContext.ballOn,65535);
+    assert.equal(t.api.retryPractice(),true);assert.equal(t.sim.getBallAtIndex(1).active,true);assert.equal(t.model._gContext.nRounds,0);
+  }
+});
+
+test('the final black in solo practice remains retryable after frame completion',()=>{
+  const t=setup(0);t.players.splice(1);t.s.practice='standard';Object.assign(t.model._gContext,{playerIndex:0,ballOn:128,inHand:0});
+  for(const b of t.sim.getBalls())if(b.number>0&&b.number!==7)b.active=false;
+  assert.equal(t.model.reportPlayerStroke(0),true);const q=t.sim.getBallAtIndex(0).position;
+  t.s.shot.trace=[{t:0,...q},{t:1,...q}];t.s.shot.contacts=[{ballIndex:7,evolution:1,...q}];
+  t.sim.getBallAtIndex(7).active=false;t.sim.result.pottedIndices=[7];t.model.reqRoundResult(t.sim);
+  assert.equal(t.model._gContext.ballOn,0);assert.equal(t.model.reportPlayerStroke(0),false);assert.equal(t.api.retryPractice(),true);
+  assert.equal(t.model._gContext.ballOn,128);assert.equal(t.sim.getBallAtIndex(7).active,true);assert.equal(t.players[0].pts,0);
+});
+
+test('practice placement permits touching but rejects overlap, rail and pocket positions',()=>{
+  const b={i:0,n:0,active:true,x:0,z:0,r:.02625},red={...b,i:1,n:1,x:.0525};
+  const bounds={minX:-1.8,maxX:1.8,minZ:-.9,maxZ:.9,pockets:[{x:0,z:.9,r:.075}]};
+  assert.equal(practice.validateLayout([b,red],bounds),'');
+  assert.match(practice.placementError([b],{...red,x:.04},bounds),/重叠/);
+  assert.match(practice.placementError([b],{...red,x:1.79},bounds),/库边/);
+  assert.match(practice.placementError([b],{...red,x:0,z:.82},bounds),/袋口/);
 });
 test('twenty over at handover pauses and blocks the next stroke until a choice',()=>{
   const t=setup();t.stroke();assert.equal(t.api.getStatus().concession.excess,20);assert.equal(t.s.modal,true);assert.equal(t.g._paused,true);assert.equal(t.model.reportPlayerStroke(0),false);

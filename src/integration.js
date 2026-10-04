@@ -18,7 +18,7 @@
   function balls(g) {
     return g._simulator.getBalls().map(b => ({ i: b.index, n: b.number, active: b.active, x: b.position.x, y: b.position.y, z: b.position.z, r: b.radius }));
   }
-  function scores(m) { return m._players.map((p, i, ps) => p.pts - (ps[(i + 1) % ps.length]?.penalty || 0)); }
+  function scores(m) { return m._players.map((p, i, ps) => p.pts - (ps.length > 1 ? ps[(i + 1) % ps.length].penalty : 0)); }
   function actor(s) { return s.hotseat ? `玩家 ${s.g._model._gContext.playerIndex + 1}` : '你'; }
   function startHotseat(s) {
     const home = s.app._controllers.home;
@@ -61,6 +61,7 @@
   }
   function statusLine(s) {
     const on = s.g._model._gContext.ballOn;
+    if (s.practice === 'custom') return `自由练习 · 台上 ${balls(s.g).filter(b => b.active && b.n > 0).length} 颗目标球${s.lastResult?.pottedCount != null ? ` · 本杆进 ${s.lastResult.pottedCount} 球` : ''}`;
     if (s.conceded) return '本局已认输';
     if (s.pending) return `犯规 ${-s.pending.result.score} 分 · 等待选择`;
     if (s.freeBallNominee != null) return `自由球：${COLOURS[s.g._simulator.getBallAtIndex(s.freeBallNominee).number]}（按${ballOnLabel(on)}计）`;
@@ -127,11 +128,14 @@
     shadow.innerHTML = `<style>
       *{box-sizing:border-box}button{font:inherit;cursor:pointer;border:1px solid #ab8544;border-radius:5px;background:#28241b;color:#fff;padding:8px 12px}button:hover{background:#65512e}button:focus-visible{outline:2px solid #f5c368;outline-offset:2px}button.primary{background:#aa782d;color:#fff}button:disabled{opacity:.45;cursor:default}.bar{display:flex;gap:9px;align-items:center;padding:7px 10px;background:#171610e8;border:1px solid #88734c;border-radius:6px}.bar button{padding:3px 7px}.veil{position:fixed;inset:0;display:grid;place-items:center;background:#0009}.panel{width:min(540px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:#171914;border:1px solid #b69758;border-radius:10px;padding:24px;box-shadow:0 18px 60px #0008}.panel h2{font-size:21px;margin:0 0 12px}.panel p{margin:9px 0 18px;color:#dedbcd}.choices{display:flex;gap:9px;flex-wrap:wrap}.note{font-size:12px;color:#b8baa9;margin-top:14px}
       [hidden]{display:none!important}.bar{max-width:calc(100vw - 16px);flex-wrap:wrap}.drag{cursor:grab;touch-action:none;user-select:none;padding:0 4px;color:#e7c986;font-size:18px}.drag:active{cursor:grabbing}
-    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="modal"></div>`;
+    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="edit" hidden>摆球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="modal"></div>`;
     document.documentElement.appendChild(host);
     s.host = host; s.shadow = shadow;
     enablePanelDrag(s);
     shadow.querySelector('.hotseat').onclick = () => startHotseat(s);
+    shadow.querySelector('.practice').onclick = () => choosePractice(s);
+    shadow.querySelector('.edit').onclick = () => openPracticeEditor(s);
+    shadow.querySelector('.retry').onclick = () => retryPractice(s);
     shadow.querySelector('.choose').onclick = () => chooseBall(s);
     shadow.querySelector('.concede').onclick = () => showConcession(s);
     shadow.addEventListener('keydown', e => e.stopPropagation());
@@ -145,18 +149,27 @@
     s.host.style.display = live || home ? 'block' : 'none';
     s.shadow.querySelector('.bar').hidden = live && s.g._activeSubControl?.name === 'replay';
     s.shadow.querySelector('.hotseat').hidden = !home;
+    s.shadow.querySelector('.practice').hidden = !home;
+    s.shadow.querySelector('.edit').hidden = !(live && s.practice === 'custom');
+    s.shadow.querySelector('.edit').disabled = !practiceReady(s) || s.modal;
+    const retry = s.shadow.querySelector('.retry');
+    retry.hidden = !(live && s.practice);
+    retry.disabled = !canRetryPractice(s) || s.modal;
+    retry.title = '恢复上一杆前的球位、分数和单杆分';
     const touching=live?touchingNotice(s):'';
-    s.shadow.querySelector('.status').textContent = home ? '人格分裂 · 一人分饰双方' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
+    s.shadow.querySelector('.status').textContent = home ? 'PCOL · 规则与练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
     const eligible = live && !s.pending && s.g._model._gState === 4 && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && (s.freeBallAvailable || s.freeBallReview || s.g._model._gContext.ballOn === 252);
     s.shadow.querySelector('.choose').hidden = !eligible;
     s.shadow.querySelector('.concede').hidden = !(live && concessionInfo(s).available && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && !s.modal);
     if ((live || home) && s.panelPosition && !s.shadow.querySelector('.bar').hidden) positionPanel(s,s.panelPosition.x,s.panelPosition.y);
   }
   function closeModal(s) {
+    s.editor?.destroy(); s.editor = null;
     s.shadow?.querySelector('.modal').replaceChildren();
     if (s.modal) s.g._paused = s.pausedBeforeModal;
     s.modal = false;
     s.g._gView?.canvas?.focus();
+    if (s.app._currentController === s.app._controllers.home) s.app._controllers.home._homeMainMenu?.activate();
     render(s);
   }
   function dialog(s, title, message, choices, note = '') {
@@ -235,7 +248,113 @@
   }
   function takeSnapshot(s) {
     const g = s.g, m = g._model, w = g._simulator._world;
-    return { serial: clone(w.serialize({ balls: [] })), context: { ...m._gContext }, balls: balls(g), scores: scores(m), nominatedColour: s.nominatedColour, nominationSource: s.nominationSource, freeBallNominee: s.freeBallNominee, touching:currentTouching(s) };
+    return { serial: clone(w.serialize({ balls: [] })), context: { ...m._gContext }, balls: balls(g), scores: scores(m), players: m._players.map(p => ({pts:p.pts,penalty:p.penalty,brk:p.brk,maxbrk:p.maxbrk,shootingCount:p.shootingCount,scoreCount:p.scoreCount})), refResult: {...m._refResult}, nominatedColour: s.nominatedColour, nominationSource: s.nominationSource, freeBallNominee: s.freeBallNominee, touching:currentTouching(s) };
+  }
+  function choosePractice(s) {
+    if (s.modal) return;
+    dialog(s, '选择练习方式', '两种练习都由你独自控制，每杆结束后均可复位重打。', [
+      ['自定义摆球 · 自由练习', () => { closeModal(s); startPractice(s, 'custom'); }, true],
+      ['正常球形 · 斯诺克规则', () => { closeModal(s); startPractice(s, 'standard'); }],
+      ['返回', () => closeModal(s)]
+    ], '自定义模式可自由摆放一套标准球组，不限制先碰球；正常模式按红球、彩球顺序计分与判罚。');
+  }
+  function startPractice(s, mode) {
+    const home = s.app._controllers.home;
+    if (!['custom','standard'].includes(mode) || s.app._currentController !== home || home.state !== 3 || s.app._uiLayer?.isBlocked) return false;
+    home._model.setSelectedAIIndex(-1);
+    s.requestedPractice = mode;
+    s.app.changeController('game');
+    return true;
+  }
+  function practiceReady(s) {
+    return Boolean(s.practice && s.app._currentController === s.g && s.g._model._gState === 4 && !s.shot && !s.g._uiLayer.isBlocked && s.g._activeSubControl?.name !== 'replay');
+  }
+  function canRetryPractice(s) { return practiceReady(s) && Boolean(s.practiceBefore); }
+  function practiceBounds(s) {
+    const sim = s.g._simulator, vertices = sim.ground.edges.map(e => e.va), sides = sim.sidePolyGroups.polys;
+    // Use the inward-facing straight cushions, ignoring the back of the pockets.
+    const minX = Math.max(Math.min(...vertices.map(p=>p.x)), ...sides.filter(p=>p.normal.x>.9999).map(p=>-p.d/p.normal.x));
+    const maxX = Math.min(Math.max(...vertices.map(p=>p.x)), ...sides.filter(p=>p.normal.x<-.9999).map(p=>-p.d/p.normal.x));
+    const minZ = Math.max(Math.min(...vertices.map(p=>p.z)), ...sides.filter(p=>p.normal.z>.9999).map(p=>-p.d/p.normal.z));
+    const maxZ = Math.min(Math.max(...vertices.map(p=>p.z)), ...sides.filter(p=>p.normal.z<-.9999).map(p=>-p.d/p.normal.z));
+    const d = s.g._model._locRef._dArea;
+    return {minX,maxX,minZ,maxZ,baulkX:d._center.x,dRadius:d._radius,pockets:[minX,0,maxX].flatMap(x=>[minZ,maxZ].map(z=>({x,z,r:.075})))};
+  }
+  function editableBalls(s) {
+    return balls(s.g).map(b=>({...b,spot:{...s.g._simulator.getBallAtIndex(b.i).spot}}));
+  }
+  function placePracticeLayout(s, layout) {
+    const sim = s.g._simulator;
+    for (const b of layout) sim.resetBallPosition(sim.getBallAtIndex(b.i), b.active ? {x:b.x,y:sim.spotY,z:b.z} : null);
+    sim.reset(false, true);
+    sim._world.accumulator = 0;
+  }
+  function openPracticeEditor(s) {
+    if (s.practice !== 'custom' || !practiceReady(s) || s.modal) return false;
+    s.celebration.clear();
+    s.pausedBeforeModal = s.g._paused; s.modal = true; s.g._paused = true;
+    s.editor = PCOLPractice.createEditor({document,window,container:s.shadow.querySelector('.modal'),balls:editableBalls(s),bounds:practiceBounds(s),onCancel:()=>closeModal(s),onApply:layout=>applyPracticeLayout(s,layout)});
+    render(s);
+    return true;
+  }
+  function applyPracticeLayout(s, layout) {
+    if (s.practice !== 'custom' || !practiceReady(s)) return false;
+    if (PCOLPractice.validateLayout(layout, practiceBounds(s))) return false;
+    closeModal(s);
+    s.practiceLayout = clone(layout);
+    s.practiceBefore = null; s.lastResult = null; s.lastBefore = null;
+    resetTurn(s);
+    for (const p of s.g._model._players) p.clearScores();
+    Object.assign(s.g._model._gContext,{playerIndex:0,nRounds:0,ballOn:65535,inHand:1});
+    placePracticeLayout(s,layout);
+    s.g._movieClip.erase();
+    s.g._fpc.gotoState0(true);
+    syncResponse(s);
+    return true;
+  }
+  function retryPractice(s) {
+    if (!canRetryPractice(s)) return false;
+    const before = s.practiceBefore, g = s.g, m = g._model, sim = g._simulator;
+    closeModal(s);
+    s.celebration.clear(); s.practiceBefore = null; s.lastResult = null;
+    resetTurn(s);
+    sim._world.restore(before.serial);
+    sim._world.accumulator = 0;
+    sim._nPhxAwakened = sim._world.nAwakened;
+    for (const b of sim.getBalls()) b.syncStates(0);
+    sim.clearResult();
+    Object.assign(m._gContext,before.context);
+    Object.assign(m._refResult,before.refResult);
+    before.players.forEach((p,i)=>{
+      const target=m._players[i];
+      target.pts=p.pts;target.penalty=p.penalty;target.brk=p.brk;target._maxBrk=p.maxbrk;target.shootingCount=p.shootingCount;target.scoreCount=p.scoreCount;
+    });
+    s.nominatedColour=before.nominatedColour;s.nominationSource=before.nominationSource;s.freeBallNominee=before.freeBallNominee;
+    g._movieClip.erase();
+    g._fpc.gotoState0(true);g._fpc.markForceUpdate();
+    g._gView.syncBalls(sim.getBalls(),sim.evolution);
+    s.log.push({kind:'practice-retry',round:m._gContext.nRounds});
+    syncResponse(s);
+    return true;
+  }
+  function recordCompletedStroke(s, shot, result) {
+    s.lastTrace=shot.trace;s.lastContacts=shot.contacts;s.lastBefore=shot.before;s.lastResult=result;
+    if (s.practice) s.practiceBefore=shot.before;
+    s.log.push({kind:'stroke',round:s.g._model._gContext.nRounds,offender:shot.before.context.playerIndex,result:clone(result),score:scores(s.g._model),traceSamples:shot.trace.length});
+    if(s.log.length>100)s.log.shift();
+    s.shot=null;resetTurn(s);
+  }
+  function finishFreePractice(s) {
+    const m=s.g._model,sim=s.g._simulator,shot=s.shot;
+    shot.physical=false;
+    const pottedCount=sim.result.pottedIndices.filter(i=>sim.getBallAtIndex(i).number>0).length;
+    if(!sim.getBallAtIndex(0).active)m._locRef._liveRespotCueBall(sim);
+    sim.reset(false,false);
+    m._gContext.nRounds++;m._gContext.ballOn=65535;m._gContext.inHand=1;
+    Object.assign(m._refResult,{score:0,foulCode:0});
+    recordCompletedStroke(s,shot,{score:0,foulCode:0,pottedCount});
+    syncResponse(s,m._refResult);
+    return m;
   }
   function sample(s) {
     const shot = s.shot;
@@ -424,14 +543,7 @@
     if (result.score > 0) { m._players[offender].pts += result.score; m._players[offender].brk += result.score; m._players[offender].scoreCount++; }
     else { m._players[offender].penalty += result.score; m._players[offender].brk = 0; ctx.playerIndex = (offender + 1) % m._players.length; }
     if (breakBefore < 100 && m._players[offender].brk >= 100) s.celebration.show({ playerLabel: s.hotseat ? `玩家 ${offender + 1}` : m._players[offender].displayName, breakScore: m._players[offender].brk });
-    s.lastTrace = shot.trace;
-    s.lastContacts = shot.contacts;
-    s.lastBefore = shot.before;
-    s.lastResult = { ...result, jump, firstHits };
-    s.log.push({ kind: 'stroke', round: ctx.nRounds, offender, result: clone(s.lastResult), score: scores(m), traceSamples: shot.trace.length });
-    if (s.log.length > 100) s.log.shift();
-    s.shot = null;
-    resetTurn(s);
+    recordCompletedStroke(s,shot,{...result,jump,firstHits});
     if (result.score < 0 && ctx.ballOn && m._players.length > 1) {
       const mask = oldMask === 252 && shot.before.nominatedColour ? 2 ** shot.before.nominatedColour : oldMask;
       const direct = PCOLCore.hasDirectHit(shot.before.balls, mask);
@@ -461,13 +573,26 @@
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
+    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;
     API.app = app;
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
     wrap(g, '_activateSubControl', original => function (...args) { const r = original.apply(this,args); if (args[0] === 'replay') s.celebration.clear(); render(s); return r; });
+    wrap(g,'updateActing',original=>function(...args){
+      const r=original.apply(this,args);
+      // Wait until the stock first-play controls dialog has been closed.
+      if(s.openEditorOnReady && practiceReady(s)){s.openEditorOnReady=false;openPracticeEditor(s);}
+      return r;
+    });
+    const home=app._controllers.home;
+    if (home) wrap(home,'_confirmMenuClick',original=>function(...args){
+      if(this._homeMainMenu.clickedIndex===1)return choosePractice(s);
+      return original.apply(this,args);
+    });
     wrap(m, 'asyncLaunch', original => function (ready) {
       s.hotseat = s.requestedHotseat;
       s.requestedHotseat = false;
+      s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;
       return original.call(this, payload => {
         if (s.hotseat) {
           const first = this._players[0], Player = first.constructor;
@@ -476,10 +601,19 @@
           first._userInfo = { ...info, displayName: 'Player 1' };
           this._players.push(new Player({ ...info, userId: 'pcol-local-player-2', displayName: 'Player 2' }, Player.PLAYER_TYPE_USER));
         }
+        s.practice=this._players.length===1?(s.requestedPractice||'standard'):null;
+        s.requestedPractice=null;s.openEditorOnReady=s.practice==='custom';
         ready(payload);
       });
     });
     wrap(g, '_showResult', original => function (...args) {
+      if(s.practice){
+        const choices=[];
+        if(canRetryPractice(s))choices.push(['复位重打最后一杆',()=>retryPractice(s),true]);
+        choices.push(['重新练习',()=>{closeModal(s);m.reqReset(sim);}]);
+        dialog(s,'练习完成',`本次得分 ${m._players[0].pts}，最高单杆 ${m._players[0].maxbrk}。`,choices);
+        return;
+      }
       const r = original.apply(this, args);
       if (s.hotseat) {
         const pts = scores(m), winner = s.conceded?.winnerIndex ?? (pts[0] === pts[1] ? null : pts[0] > pts[1] ? 0 : 1);
@@ -499,7 +633,7 @@
       return original.call(this, key);
     });
     wrap(m, 'reportPlayerStroke', original => function (player) {
-      if (s.modal || s.pending || s.conceded || this._gState !== 4 || this._gContext.playerIndex !== player) return false;
+      if (s.modal || s.pending || s.conceded || !this._gContext.ballOn || this._gState !== 4 || this._gContext.playerIndex !== player) return false;
       const controller = g._playerCtls.find(c => c.gPlayerIndex === player);
       if (player === g._fpc.gPlayerIndex) {
         if (s.freeBallReview || (s.freeBallAvailable && s.freeBallNominee == null && !s.freeBallDeclined)) { chooseBall(s); return false; }
@@ -546,23 +680,35 @@
     // Hook that source too, so document-start installation records real steps.
     wrap(world, '__internalStep__', original => function (...args) { const r = original.apply(this, args); sample(s); return r; });
     wrap(m, '_locRoundResultResponse', original => function (...args) {
+      if (s.practice==='custom' && s.shot) return finishFreePractice(s);
       if (this._gContext.ballOn === 65535 || !s.shot) return original.apply(this, args);
       return finishStroke(s);
     });
     wrap(m, '_onResetResponse', original => function (...args) {
       s.celebration.clear();
+      s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;
       s.pending = null; s.shot = null; s.conceded = null; s.concessionTurn = null; resetTurn(s); if (s.modal) closeModal(s);
       return original.apply(this, args);
     });
     // Keep the small status chip in sync after cue-ball placement and game lifecycle changes.
-    wrap(m, '_response', original => function (...args) { syncHotseat(s); const r = original.apply(this, args); render(s); return r; });
+    wrap(m, '_response', original => function (...args) {
+      if(args[1]==='restart' && s.practice==='custom'){
+        const layout=s.practiceLayout||editableBalls(s).map(b=>({...b,active:b.n===0}));
+        placePracticeLayout(s,layout);
+        this._gContext.ballOn=65535;this._gContext.inHand=1;
+      }
+      syncHotseat(s); const r = original.apply(this, args); render(s); return r;
+    });
     mount(s);
     return s;
   }
   const API = window.PCOLPatch = {
     version: VERSION, core: PCOLCore, attach,
-    getStatus: () => active ? { attached: true, version: VERSION, mode: active.hotseat ? 'hotseat' : active.g._model._players.length > 1 ? 'ai' : 'practice', context: { ...active.g._model._gContext }, score: scores(active.g._model), pending: active.pending && { offender: active.pending.offender, miss: active.pending.miss, reviewMiss: active.pending.reviewMiss }, freeBallAvailable: active.freeBallAvailable, freeBallReview: active.freeBallReview, freeBallAssessment: active.freeBallAssessment, nominatedColour: active.nominatedColour, nominationSource: active.nominationSource, freeBallNominee: active.freeBallNominee, touching:currentTouching(active), concession: concessionInfo(active), conceded: active.conceded, lastResult: active.lastResult, traceSamples: active.lastTrace.length, log: clone(active.log) } : { attached: false, version: VERSION },
+    getStatus: () => active ? { attached: true, version: VERSION, mode: active.hotseat ? 'hotseat' : active.g._model._players.length > 1 ? 'ai' : 'practice', practice:active.practice, canRetryPractice:canRetryPractice(active), context: { ...active.g._model._gContext }, score: scores(active.g._model), pending: active.pending && { offender: active.pending.offender, miss: active.pending.miss, reviewMiss: active.pending.reviewMiss }, freeBallAvailable: active.freeBallAvailable, freeBallReview: active.freeBallReview, freeBallAssessment: active.freeBallAssessment, nominatedColour: active.nominatedColour, nominationSource: active.nominationSource, freeBallNominee: active.freeBallNominee, touching:currentTouching(active), concession: concessionInfo(active), conceded: active.conceded, lastResult: active.lastResult, traceSamples: active.lastTrace.length, log: clone(active.log) } : { attached: false, version: VERSION },
     startHotseat: () => active && startHotseat(active),
+    startPractice: mode => active && startPractice(active,mode),
+    editPractice: () => active && openPracticeEditor(active),
+    retryPractice: () => active && retryPractice(active),
     chooseBall: () => active && chooseBall(active),
     resolveFoul: action => active && resolveFoul(active, action),
     concede: () => active && concedeFrame(active),
