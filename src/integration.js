@@ -411,7 +411,7 @@
     }
     if (jumpDecision !== undefined) { jump.refereeDecision = jumpDecision; s.log.push({ kind: 'referee-jump-confirmation', foul: jumpDecision }); }
     const result = PCOLCore.adjudicate({ ballOn: oldMask, nominatedColour: shot.before.nominatedColour, freeBallNominee: shot.before.freeBallNominee, balls: balls(g), firstHits, potted: [...sim.result.pottedIndices], outOfBounds: [...sim.result.outOfBoundsIndices], jumpFoul: jump.foul || jumpDecision === true, touchingAtStart:shot.before.touching.indices, pushedTouching:shot.pushedTouching });
-    const ctx = m._gContext, offender = ctx.playerIndex;
+    const ctx = m._gContext, offender = ctx.playerIndex, breakBefore = m._players[offender].brk;
     ctx.ballOn = result.nextBallOn;
     ctx.inHand = result.requiresInHand ? 2 : 0;
     sim._world.useStrictMode = true;
@@ -423,6 +423,7 @@
     ctx.nRounds++;
     if (result.score > 0) { m._players[offender].pts += result.score; m._players[offender].brk += result.score; m._players[offender].scoreCount++; }
     else { m._players[offender].penalty += result.score; m._players[offender].brk = 0; ctx.playerIndex = (offender + 1) % m._players.length; }
+    if (breakBefore < 100 && m._players[offender].brk >= 100) s.celebration.show({ playerLabel: s.hotseat ? `玩家 ${offender + 1}` : m._players[offender].displayName, breakScore: m._players[offender].brk });
     s.lastTrace = shot.trace;
     s.lastContacts = shot.contacts;
     s.lastBefore = shot.before;
@@ -459,10 +460,11 @@
     const g = app._controllers.game, m = g._model, sim = g._simulator, world = sim._world;
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
+    s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
     API.app = app;
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
-    wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); render(s); return r; });
-    wrap(g, '_activateSubControl', original => function (...args) { const r = original.apply(this,args); render(s); return r; });
+    wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
+    wrap(g, '_activateSubControl', original => function (...args) { const r = original.apply(this,args); if (args[0] === 'replay') s.celebration.clear(); render(s); return r; });
     wrap(m, 'asyncLaunch', original => function (ready) {
       s.hotseat = s.requestedHotseat;
       s.requestedHotseat = false;
@@ -510,7 +512,7 @@
       } else aiColour(s, controller);
       const before = takeSnapshot(s);
       const accepted = original.call(this, player);
-      if (accepted) { s.concessionTurn = null; s.shot = { before, trace: [], contacts: [], physical: false, touchWatches:new Map(before.touching.indices.map(i=>[i,{initial:true}])), pushedTouching:[] }; render(s); }
+      if (accepted) { s.celebration.clear(); s.concessionTurn = null; s.shot = { before, trace: [], contacts: [], physical: false, touchWatches:new Map(before.touching.indices.map(i=>[i,{initial:true}])), pushedTouching:[] }; render(s); }
       return accepted;
     });
     wrap(sim, 'stroke', original => function (...args) {
@@ -548,6 +550,7 @@
       return finishStroke(s);
     });
     wrap(m, '_onResetResponse', original => function (...args) {
+      s.celebration.clear();
       s.pending = null; s.shot = null; s.conceded = null; s.concessionTurn = null; resetTurn(s); if (s.modal) closeModal(s);
       return original.apply(this, args);
     });
@@ -563,7 +566,7 @@
     chooseBall: () => active && chooseBall(active),
     resolveFoul: action => active && resolveFoul(active, action),
     concede: () => active && concedeFrame(active),
-    uninstall: () => { if (active?.modal) closeModal(active); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
+    uninstall: () => { if (active?.modal) closeModal(active); active?.celebration.destroy(); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
   };
   function instrument(chunk) {
     const modules = chunk?.[1], original = modules?.[10];

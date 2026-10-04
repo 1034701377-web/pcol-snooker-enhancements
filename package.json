@@ -1,12 +1,12 @@
 {
   "name": "pcol-snooker-enhancements",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "PCOL snooker userscript with local hot-seat play and rule improvements",
   "repository": "https://github.com/1034701377-web/pcol-snooker-enhancements",
   "scripts": {
     "build": "node scripts/build.js",
-    "test": "node --test test/rules-core.test.js test/game-integration.test.js",
+    "test": "node --test test/rules-core.test.js test/game-integration.test.js test/celebration.test.js",
     "check": "node scripts/build.js && node --check outputs/pcol-rules-patch.user.js && npm test"
   }
 }

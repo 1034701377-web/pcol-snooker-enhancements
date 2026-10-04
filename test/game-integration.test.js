@@ -25,7 +25,8 @@ function setup(score=55){
   const app={constructor:{VERSION:'0.1.0.03152018'},_controllers:{game:g},_currentController:g,onCurrentControllerStateChanged(){}};
   const window={addEventListener(){},removeEventListener(){}},document={documentElement:new Element(),createElement:tag=>new Element(tag)};
   const integration=fs.readFileSync(require.resolve('../src/integration.js'),'utf8').replaceAll('__PCOL_VERSION__',JSON.stringify(version));
-  vm.runInNewContext(integration,{window,document,PCOLCore:core,console});
+  const celebrations=[];
+  vm.runInNewContext(integration,{window,document,PCOLCore:core,PCOLCelebration:{create:()=>({show:data=>celebrations.push(data),clear(){},destroy(){}})},console});
   const s=window.PCOLPatch.attach(app,{c:{}}),api=window.PCOLPatch;
   function stroke({player=1,pot=false,miss=false}={}){
     model._gContext.playerIndex=player;if(s.hotseat)model._response(sim);assert.equal(model.reportPlayerStroke(player),true);
@@ -35,8 +36,17 @@ function setup(score=55){
     assert.equal(model.reqRoundResult(sim),model);
   }
   const buttons=()=>{const panel=s.shadow.querySelector('.panel');return panel?.querySelector('.choices')?.children||[];};
-  return {s,api,g,model,sim,players,stroke,buttons,endings:()=>endings};
+  return {s,api,g,model,sim,players,stroke,buttons,celebrations,endings:()=>endings};
 }
+
+test('a century is celebrated on the scoring stroke once, never on response or foul',()=>{
+  const t=setup(0);t.players[1].brk=99;t.stroke({pot:true});
+  assert.equal(t.celebrations.length,1);assert.equal(t.celebrations[0].breakScore,100);
+  t.model._response(t.sim);assert.equal(t.celebrations.length,1);
+  t.model._gContext.ballOn=2;t.sim.getBallAtIndex(1).active=true;t.sim.clearResult();t.stroke({pot:true});
+  assert.equal(t.players[1].brk,101);assert.equal(t.celebrations.length,1);
+  const foul=setup(0);foul.players[1].brk=99;foul.stroke({miss:true});assert.equal(foul.celebrations.length,0);
+});
 test('twenty over at handover pauses and blocks the next stroke until a choice',()=>{
   const t=setup();t.stroke();assert.equal(t.api.getStatus().concession.excess,20);assert.equal(t.s.modal,true);assert.equal(t.g._paused,true);assert.equal(t.model.reportPlayerStroke(0),false);
   assert.deepEqual(t.buttons().map(b=>b.textContent),['继续本局','认输本局']);

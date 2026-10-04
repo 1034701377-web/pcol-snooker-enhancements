@@ -20,7 +20,8 @@ const header = `// ==UserScript==
 // ==/UserScript==
 `;
 const core = read('src/rules-core.js').replace(/\nmodule\.exports = PCOLCore;\s*$/,'\n');
+const celebration = read('src/celebration.js').replace(/\nmodule\.exports = PCOLCelebration;\s*$/,'\n');
 const integration = read('src/integration.js').replaceAll('__PCOL_VERSION__',JSON.stringify(version));
 fs.mkdirSync(path.join(root,'outputs'),{recursive:true});
-fs.writeFileSync(path.join(root,'outputs/pcol-rules-patch.user.js'),header+'(() => {\n'+core+'\n'+integration+'\n})();\n','utf8');
+fs.writeFileSync(path.join(root,'outputs/pcol-rules-patch.user.js'),header+'(() => {\n'+core+'\n'+celebration+'\n'+integration+'\n})();\n','utf8');
 console.log(`Built PCOL ${version}`);
