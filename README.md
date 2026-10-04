@@ -1,0 +1,46 @@
+# PCOL 斯诺克增强脚本
+
+在原版 [PCOL](http://www.heyzxz.me/pcol/) 上运行的 Tampermonkey 用户脚本，支持本地“人格分裂”双人局和斯诺克规则改进。
+
+## 安装
+
+Chrome 安装 Tampermonkey 后，打开 [用户脚本安装链接](https://raw.githubusercontent.com/1034701377-web/pcol-snooker-enhancements/main/outputs/pcol-rules-patch.user.js)，在油猴安装页确认安装或更新。刷新游戏页面后生效。
+
+首页左下角点击“开始双人局”，由同一人轮流控制两名玩家。原版 AI 对战和练习入口仍可使用。
+
+旧 Gist 安装链接会提供迁移更新；更新到本版本后，后续自动更新从这个仓库获取。
+
+## 已实现
+
+- 犯规后接手、让犯规者从现位置重打，以及“犯规与空杆”后的整桌复位。
+- 白球落袋／离台后的复位与 D 区手中球处理。
+- 自由球判定、提名、计分和复位。
+- 跳球犯规判定及合法例外。
+- 彩球目标在出杆前确定：意图明确时自动识别，否则要求手动指定。
+- 贴球提示、合法打离豁免、出杆推动相贴球的判罚；贴彩球时要求明确声明目标。
+- 换方时，落后方的分差减去台面剩余最高得分达到 20 分，可选择认输。
+- 浮窗可拖动并记忆位置，双击拖动柄复位；观看回放时隐藏。
+
+## 判罚边界
+
+规则参考 [WPBSA 2024–25](https://wpbsa.com/wp-content/uploads/2198_WPBSA-Rulebook-2024-25.pdf)。本脚本面向 PCOL `0.1.0.03152018`。
+
+遮挡下的是否尽力解球、手中球在整个 D 区的自由球证明，以及边界腾空轨迹仍需人工裁判确认。原游戏的同分重摆黑球等未被本脚本完整接管。原版 AI 仍使用自己的算法，不能自动处理所有新增裁判选择。
+
+## 开发
+
+只需 Node.js，无第三方依赖：
+
+```sh
+npm run build
+npm test
+```
+
+`npm run check` 一次完成构建、脚本语法检查和测试。版本号在 `package.json` 修改，再重新构建。
+
+- `src/rules-core.js`：纯规则与几何计算。
+- `src/integration.js`：游戏接入、控制器和界面；版本占位符由构建替换。
+- `outputs/pcol-rules-patch.user.js`：完整可安装脚本，由构建生成。
+- `test/`：规则和原版模型交互的回归测试；`fixtures/pcol-model.js` 是从原版游戏提取的最小模型测试资源，不会打包到用户脚本。
+
+原游戏由 [heyzxz](https://github.com/heyzxz/all-about-pcol) 制作。本项目提供浏览器侧补丁，不包含原游戏的完整资源包，也没有联机服务器或外部 AI 服务。
