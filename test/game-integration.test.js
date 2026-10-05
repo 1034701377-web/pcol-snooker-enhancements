@@ -112,6 +112,23 @@ test('a century is celebrated on the scoring stroke once, never on response or f
   const foul=setup(0);foul.players[1].brk=99;foul.stroke({miss:true});assert.equal(foul.celebrations.length,0);
 });
 
+test('147 and 155 get their own celebration on the final black, without calling 148 a maximum',()=>{
+  for(const before of [140,141,148]){
+    const t=setup(0);t.players[1].brk=before;
+    for(const b of t.sim.getBalls())if(b.number>0&&b.number!==7)b.active=false;
+    t.model._gContext.ballOn=128;
+    assert.equal(t.model.reportPlayerStroke(1),true);
+    const q=t.sim.getCueBallPosition();
+    t.s.shot.trace=[{t:0,...q},{t:1,...q}];t.s.shot.contacts=[{ballIndex:7,evolution:1,...q}];
+    t.sim.getBallAtIndex(7).active=false;t.sim.result.pottedIndices=[7];t.model.reqRoundResult(t.sim);
+    const after=before+7;
+    assert.equal(t.players[1].brk,after);
+    assert.equal(t.celebrations.length,after===148?0:1);
+    if(after!==148)assert.equal(t.celebrations[0].breakScore,after);
+    t.model._response(t.sim);assert.equal(t.celebrations.length,after===148?0:1);
+  }
+});
+
 test('standard practice retries a pot or foul with the entire table and score counters restored',()=>{
   for(const miss of [false,true]){
     const t=setup(0);t.players.splice(1);t.s.practice='standard';t.model._gContext.playerIndex=0;t.model._gContext.inHand=0;

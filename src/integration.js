@@ -635,7 +635,11 @@
     ctx.nRounds++;
     if (result.score > 0) { m._players[offender].pts += result.score; m._players[offender].brk += result.score; m._players[offender].scoreCount++; }
     else { m._players[offender].penalty += result.score; m._players[offender].brk = 0; ctx.playerIndex = (offender + 1) % m._players.length; }
-    if (breakBefore < 100 && m._players[offender].brk >= 100) s.celebration.show({ playerLabel: s.hotseat ? `玩家 ${offender + 1}` : m._players[offender].displayName, breakScore: m._players[offender].brk });
+    const breakScore=m._players[offender].brk;
+    if ((breakBefore < 100 && breakScore >= 100) ||
+        (breakScore === 147 && breakBefore < 147) || (breakScore === 155 && breakBefore < 155)) {
+      s.celebration.show({ playerLabel: s.hotseat ? `玩家 ${offender + 1}` : m._players[offender].displayName, breakScore });
+    }
     recordCompletedStroke(s,shot,{...result,jump,firstHits});
     if (result.score < 0 && ctx.ballOn && m._players.length > 1) {
       const mask = oldMask === 252 && shot.before.nominatedColour ? 2 ** shot.before.nominatedColour : oldMask;
