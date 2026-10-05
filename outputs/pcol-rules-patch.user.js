@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.2.4
+// @version      0.2.5
 // @description  Snooker rules, century celebrations, custom practice layouts and stroke retry.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -514,9 +514,7 @@ const PCOLPractice = (() => {
   function placementError(layout, candidate, bounds) {
     const { x, z, r } = candidate;
     if (![x, z, r].every(Number.isFinite) || r <= 0) return '球的位置无效';
-    if (x - r < bounds.minX - EPSILON || x + r > bounds.maxX + EPSILON ||
-        z - r < bounds.minZ - EPSILON || z + r > bounds.maxZ + EPSILON) return '球不能越过库边';
-    if (bounds.pockets.some(p => Math.hypot(x - p.x, z - p.z) < p.r + r - EPSILON)) return '球不能摆在袋口内';
+    if (!bounds.contains(x, z)) return '球不能摆在台面之外';
     if (layout.some(b => b.active && b.i !== candidate.i && Math.hypot(x - b.x, z - b.z) < r + b.r - EPSILON)) return '与另一颗球重叠，请稍微移开';
     return '';
   }
@@ -650,7 +648,7 @@ const PCOLPractice = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.2.4";
+  const VERSION = "0.2.5";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）']];
@@ -955,14 +953,9 @@ const PCOLPractice = (() => {
   }
   function canRetryPractice(s) { return practiceReady(s) && !s.placement && Boolean(s.practiceBefore); }
   function practiceBounds(s) {
-    const sim = s.g._simulator, vertices = sim.ground.edges.map(e => e.va), sides = sim.sidePolyGroups.polys;
-    // Use the inward-facing straight cushions, ignoring the back of the pockets.
-    const minX = Math.max(Math.min(...vertices.map(p=>p.x)), ...sides.filter(p=>p.normal.x>.9999).map(p=>-p.d/p.normal.x));
-    const maxX = Math.min(Math.max(...vertices.map(p=>p.x)), ...sides.filter(p=>p.normal.x<-.9999).map(p=>-p.d/p.normal.x));
-    const minZ = Math.max(Math.min(...vertices.map(p=>p.z)), ...sides.filter(p=>p.normal.z>.9999).map(p=>-p.d/p.normal.z));
-    const maxZ = Math.min(Math.max(...vertices.map(p=>p.z)), ...sides.filter(p=>p.normal.z<-.9999).map(p=>-p.d/p.normal.z));
-    const d = s.g._model._locRef._dArea;
-    return {minX,maxX,minZ,maxZ,baulkX:d._center.x,dRadius:d._radius,pockets:[minX,0,maxX].flatMap(x=>[minZ,maxZ].map(z=>({x,z,r:.075})))};
+    // The stock model projects the ball centre onto the actual cloth polygon,
+    // including the cut corners. Do not enlarge pocket openings with guessed circles.
+    return {contains:(x,z)=>s.g._model.pointProjectionOnTable(x,s.g._simulator.spotY,z)};
   }
   function editableBalls(s) {
     return balls(s.g).map(b=>({...b,spot:{...s.g._simulator.getBallAtIndex(b.i).spot}}));

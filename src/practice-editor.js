@@ -7,9 +7,7 @@ const PCOLPractice = (() => {
   function placementError(layout, candidate, bounds) {
     const { x, z, r } = candidate;
     if (![x, z, r].every(Number.isFinite) || r <= 0) return '球的位置无效';
-    if (x - r < bounds.minX - EPSILON || x + r > bounds.maxX + EPSILON ||
-        z - r < bounds.minZ - EPSILON || z + r > bounds.maxZ + EPSILON) return '球不能越过库边';
-    if (bounds.pockets.some(p => Math.hypot(x - p.x, z - p.z) < p.r + r - EPSILON)) return '球不能摆在袋口内';
+    if (!bounds.contains(x, z)) return '球不能摆在台面之外';
     if (layout.some(b => b.active && b.i !== candidate.i && Math.hypot(x - b.x, z - b.z) < r + b.r - EPSILON)) return '与另一颗球重叠，请稍微移开';
     return '';
   }

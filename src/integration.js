@@ -305,14 +305,9 @@
   }
   function canRetryPractice(s) { return practiceReady(s) && !s.placement && Boolean(s.practiceBefore); }
   function practiceBounds(s) {
-    const sim = s.g._simulator, vertices = sim.ground.edges.map(e => e.va), sides = sim.sidePolyGroups.polys;
-    // Use the inward-facing straight cushions, ignoring the back of the pockets.
-    const minX = Math.max(Math.min(...vertices.map(p=>p.x)), ...sides.filter(p=>p.normal.x>.9999).map(p=>-p.d/p.normal.x));
-    const maxX = Math.min(Math.max(...vertices.map(p=>p.x)), ...sides.filter(p=>p.normal.x<-.9999).map(p=>-p.d/p.normal.x));
-    const minZ = Math.max(Math.min(...vertices.map(p=>p.z)), ...sides.filter(p=>p.normal.z>.9999).map(p=>-p.d/p.normal.z));
-    const maxZ = Math.min(Math.max(...vertices.map(p=>p.z)), ...sides.filter(p=>p.normal.z<-.9999).map(p=>-p.d/p.normal.z));
-    const d = s.g._model._locRef._dArea;
-    return {minX,maxX,minZ,maxZ,baulkX:d._center.x,dRadius:d._radius,pockets:[minX,0,maxX].flatMap(x=>[minZ,maxZ].map(z=>({x,z,r:.075})))};
+    // The stock model projects the ball centre onto the actual cloth polygon,
+    // including the cut corners. Do not enlarge pocket openings with guessed circles.
+    return {contains:(x,z)=>s.g._model.pointProjectionOnTable(x,s.g._simulator.spotY,z)};
   }
   function editableBalls(s) {
     return balls(s.g).map(b=>({...b,spot:{...s.g._simulator.getBallAtIndex(b.i).spot}}));

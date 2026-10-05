@@ -24,7 +24,7 @@ function setup(score=55){
   Object.assign(sim,{spotY:.90625,ground:{edges:[{va:{x:-1.7969,z:-.8966}},{va:{x:1.7969,z:.8966}}]},sidePolyGroups:{polys:[]},
     respotIndexXYZ(i,x,y,z){bs[i].active=true;bs[i].position={x,y,z};},resetBallPosition(b,p){b.active=Boolean(p);if(p)b.position={...p};},touchBalls(i,p){return bs.some(b=>b.active&&b.index!==i&&Math.hypot(p.x-b.position.x,p.z-b.position.z)<2*b.radius);}});
   model._locRef={_liveRespot(){},_liveRespotCueBall(){},resetGContext(ctx){ctx.ballOn=2;ctx.inHand=0;}};
-  Object.assign(model._locRef,{_dArea:{_center:{x:-1.04},_radius:.29},intersectionRayValidRegionPlane(origin,dir,out){Object.assign(out,origin);return true;},projectionInSideValidRegion(x){return x<=-1;}});
+  Object.assign(model._locRef,{_dArea:{_center:{x:-1.04},_radius:.29},intersectionRayValidRegionPlane(origin,dir,out){Object.assign(out,origin);return true;},projectionInSideValidRegion(x){return x<=-1;},projectionOnTable(x,y,z){return Math.abs(x)<=1.7969&&Math.abs(z)<=.8971&&Math.abs(x)+Math.abs(z)<=2.6617;}});
   let endings=0;model.on('response',()=>{if(model._gContext.ballOn===0)endings++;});
   const fpc={_gPlayerIndex:0,get gPlayerIndex(){return this._gPlayerIndex;},gotoState0(){this._state=0;},gotoState1(){this._state=1;},markForceUpdate(){}},g={_model:model,_simulator:sim,_fpc:fpc,_playerCtls:[fpc,{gPlayerIndex:1,deactivate(){},release(){}}],_paused:false,_gView:{canvas:{focus(){}},syncBalls(){}},_movieClip:{erase(){}},_uiLayer:{closeMessage(){}}};
   Object.assign(g._gView,{showRespotIcons(){},requireRender(){},_respotIcon0:{alpha:0}});
@@ -72,6 +72,12 @@ test('3D practice placement moves the selected colour across the table, rejects 
   t.editor().onSelect(5);const pos={x:1.2,y:.90625,z:0};
   assert.equal(t.model.isValidInHandPositionUnderRay(pos,{},t.sim,{}),true);
   assert.equal(t.model.reqRespotCueball(pos,t.sim),true);assert.deepEqual(t.sim.getBallAtIndex(5).position,pos);
+  const lip={x:1.75,y:.90625,z:-.83};
+  assert.equal(t.model.isValidInHandPositionUnderRay(lip,{},t.sim,{}),true);
+  assert.equal(t.model.reqRespotCueball(lip,t.sim),true);assert.deepEqual(t.sim.getBallAtIndex(5).position,lip);
+  const pocket={x:1.78,y:.90625,z:-.89};
+  assert.equal(t.model.isValidInHandPositionUnderRay(pocket,{},t.sim,{}),false);
+  assert.equal(t.model.reqRespotCueball(pocket,t.sim),false);
   assert.deepEqual(t.sim.getBallAtIndex(0).position,before.balls[0].position);assert.equal(t.g._activeSubControl.name,'inHand');
   assert.equal(t.model.reqRespotCueball(t.sim.getBallAtIndex(0).position,t.sim),false);assert.equal(t.model.reportPlayerStroke(0),false);
   t.editor().onCancel();assert.equal(t.s.placement,null);assert.deepEqual(t.sim._world.serialize(),before);assert.equal(t.g._activeSubControl.name,'gaming');
@@ -138,13 +144,14 @@ test('the final black in solo practice remains retryable after frame completion'
   assert.equal(t.model._gContext.ballOn,128);assert.equal(t.sim.getBallAtIndex(7).active,true);assert.equal(t.players[0].pts,0);
 });
 
-test('practice placement permits touching but rejects overlap, rail and pocket positions',()=>{
+test('practice placement uses the native cloth boundary, allowing the pocket lip but rejecting overlap and off-table positions',()=>{
   const b={i:0,n:0,active:true,x:0,z:0,r:.02625},red={...b,i:1,n:1,x:.0525};
-  const bounds={minX:-1.8,maxX:1.8,minZ:-.9,maxZ:.9,pockets:[{x:0,z:.9,r:.075}]};
+  const bounds={contains:(x,z)=>Math.abs(x)<=1.7969&&Math.abs(z)<=.8971&&Math.abs(x)+Math.abs(z)<=2.6617};
   assert.equal(practice.placementError([b],red,bounds),'');
   assert.match(practice.placementError([b],{...red,x:.04},bounds),/重叠/);
-  assert.match(practice.placementError([b],{...red,x:1.79},bounds),/库边/);
-  assert.match(practice.placementError([b],{...red,x:0,z:.82},bounds),/袋口/);
+  assert.equal(practice.placementError([b],{...red,x:1.75,z:-.83},bounds),'');
+  assert.match(practice.placementError([b],{...red,x:1.81},bounds),/台面之外/);
+  assert.match(practice.placementError([b],{...red,x:1.78,z:-.89},bounds),/台面之外/);
 });
 test('twenty over at handover pauses and blocks the next stroke until a choice',()=>{
   const t=setup();t.stroke();assert.equal(t.api.getStatus().concession.excess,20);assert.equal(t.s.modal,true);assert.equal(t.g._paused,true);assert.equal(t.model.reportPlayerStroke(0),false);
