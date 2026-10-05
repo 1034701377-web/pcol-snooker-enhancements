@@ -7,6 +7,19 @@ const cue=b(0,0,0);
 const set=[cue,b(1,1,1),b(2,1,1.1,.1),b(3,2,-1,-.3),b(4,3,-1,.3),b(5,4,-1),b(6,5,0,.7),b(7,6,.8,.5),b(8,7,1.3,.5)];
 const shot=overrides=>C.adjudicate({ballOn:2,balls:set,firstHits:[1],...overrides});
 
+test('pink respot prefers the top side even when the Baulk side is closer',()=>{
+  const pink=b(20,6,.86,0,{active:false}),blocker=b(1,1,.885);
+  const x=C.pinkRespotX([pink,blocker],pink,-1.77,1.77);
+  assert.ok(Math.abs(x-(blocker.x+2*C.RADIUS+2*C.TOUCH_EPS))<1e-10);
+  assert.ok(x-blocker.x>2*C.RADIUS+C.TOUCH_EPS);
+});
+test('pink respot uses the nearest Baulk-side gap only when the top side is full',()=>{
+  const pink=b(20,6,.86,0,{active:false});
+  const blockers=Array.from({length:13},(_,i)=>b(i+1,1,.89+i*.07));
+  const x=C.pinkRespotX([pink,...blockers],pink,-1.77,1.77);
+  assert.ok(Math.abs(x-(.89-2*C.RADIUS-2*C.TOUCH_EPS))<1e-10);
+});
+
 test('remaining maximum includes final colour after the last red',()=>{
   const colours=[cue,...[2,3,4,5,6,7].map((n,i)=>b(16+i,n,i))];
   assert.equal(C.remainingPoints([...colours,...Array.from({length:15},(_,i)=>b(i+1,1,i))],2),147);

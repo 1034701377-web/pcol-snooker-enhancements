@@ -50,6 +50,22 @@ function setup(score=55){
   return {s,api,g,model,sim,players,stroke,buttons,celebrations,editor:()=>editorOptions,paletteVisible:()=>paletteVisible,endings:()=>endings};
 }
 
+test('pink respot hook preserves own and alternate spots before using the top-side line',()=>{
+  for(const scenario of ['own','alternate','line']){
+    const t=setup(0),bs=t.sim.getBalls(),pink=bs.find(b=>b.number===6),green=bs.find(b=>b.number===3);
+    Object.assign(t.sim.ground,{centerPosition:{x:0},size:{x:3.5938}});
+    t.sim.resetBallXYZ=(b,x,y,z)=>{b.active=true;b.position={x,y,z};};
+    t.sim.respotIndexDefault=i=>t.sim.resetBallPosition(bs[i],bs[i].spot);
+    pink.active=false;pink.spot={x:.86,y:.90625,z:0};
+    if(scenario!=='own')bs.push({index:bs.length,number:1,active:true,radius:.02625,position:{x:.885,y:.90625,z:0}});
+    if(scenario==='alternate')green.active=false;
+    t.model._locRef._liveRespotColorBalls([pink],t.sim);
+    if(scenario==='own')assert.deepEqual(pink.position,pink.spot);
+    else if(scenario==='alternate')assert.deepEqual(pink.position,green.spot);
+    else{assert.ok(pink.position.x>pink.spot.x);assert.equal(pink.position.z,0);}
+  }
+});
+
 test('3D practice placement moves the selected colour across the table, rejects overlaps and cancels cleanly',()=>{
   const t=setup(0);t.players.splice(1);t.s.practice='custom';Object.assign(t.model._gContext,{ballOn:65535,playerIndex:0});
   const before=t.sim._world.serialize();assert.equal(t.api.editPractice(),true);assert.equal(t.g._paused,false);

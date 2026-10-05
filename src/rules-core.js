@@ -16,6 +16,40 @@ const PCOLCore = (() => {
   const active = b => b.active !== false;
   const ballOnNumbers = mask => [1,2,3,4,5,6,7].filter(n => (mask & (1 << n)) !== 0);
 
+  // PCOL's x axis runs from Baulk to the black end. Leave a small gap beyond
+  // the touching tolerance, and only consider Baulk after the top side is full.
+  function pinkRespotX(balls, pink, minX, maxX) {
+    const intervals=[];
+    for(const b of balls){
+      if(!active(b)||b.i===pink.i)continue;
+      const rr=radius(pink)+radius(b)+2*TOUCH_EPS;
+      const across=(b.y-pink.y)**2+(b.z-pink.z)**2;
+      if(across>=rr*rr)continue;
+      const half=Math.sqrt(rr*rr-across);
+      intervals.push([b.x-half,b.x+half]);
+    }
+    intervals.sort((a,b)=>a[0]-b[0]);
+    const blocked=[];
+    for(const range of intervals){
+      const last=blocked[blocked.length-1];
+      if(last&&range[0]<last[1])last[1]=Math.max(last[1],range[1]);
+      else blocked.push(range);
+    }
+    let x=pink.x;
+    for(const [left,right] of blocked){
+      if(x<=left)break;
+      if(x<right)x=right;
+    }
+    if(x<=maxX)return x;
+    x=pink.x;
+    for(let i=blocked.length-1;i>=0;i--){
+      const [left,right]=blocked[i];
+      if(x>=right)break;
+      if(x>left)x=left;
+    }
+    return x>=minX?x:null;
+  }
+
   function touchingStatus({balls,ballOn,nominatedColour=null,freeBallNominee=null}) {
     const cue=balls.find(b=>b.n===0 && active(b));
     const touched=cue?balls.filter(b=>b.n>0 && active(b) && Math.hypot(cue.x-b.x,cue.y-b.y,cue.z-b.z)<=radius(cue)+radius(b)+TOUCH_EPS):[];
@@ -345,6 +379,6 @@ const PCOLCore = (() => {
     const requiresInHand=!!cueBall && (removed.has(cueBall.i) || !active(cueBall));
     return {score,foulCode,nextBallOn,respots,requiresInHand,ballOnUsed:on,penalty:foulCode?penalty:0,freeBallNominee:validNominee?nominee.i:null,reasons,freeBallSafety,canonicalPotted,continueBreak:score>0,touching:{indices:touching.map(b=>b.i),deemedHit,pushedIndices:unique(pushedTouching)}};
   }
-  return Object.freeze({RADIUS,RED,COLOUR_ALL,FOUL,TOUCH_EPS,ballOnNumbers,touchingStatus,remainingPoints,concessionStatus,isSnookered,hasDirectHit,inferColour,evaluateJump,adjudicate});
+  return Object.freeze({RADIUS,RED,COLOUR_ALL,FOUL,TOUCH_EPS,ballOnNumbers,pinkRespotX,touchingStatus,remainingPoints,concessionStatus,isSnookered,hasDirectHit,inferColour,evaluateJump,adjudicate});
 })();
 module.exports = PCOLCore;

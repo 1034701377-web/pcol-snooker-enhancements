@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.2.3
+// @version      0.2.4
 // @description  Snooker rules, century celebrations, custom practice layouts and stroke retry.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -29,6 +29,40 @@ const PCOLCore = (() => {
   const hypot2 = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
   const active = b => b.active !== false;
   const ballOnNumbers = mask => [1,2,3,4,5,6,7].filter(n => (mask & (1 << n)) !== 0);
+
+  // PCOL's x axis runs from Baulk to the black end. Leave a small gap beyond
+  // the touching tolerance, and only consider Baulk after the top side is full.
+  function pinkRespotX(balls, pink, minX, maxX) {
+    const intervals=[];
+    for(const b of balls){
+      if(!active(b)||b.i===pink.i)continue;
+      const rr=radius(pink)+radius(b)+2*TOUCH_EPS;
+      const across=(b.y-pink.y)**2+(b.z-pink.z)**2;
+      if(across>=rr*rr)continue;
+      const half=Math.sqrt(rr*rr-across);
+      intervals.push([b.x-half,b.x+half]);
+    }
+    intervals.sort((a,b)=>a[0]-b[0]);
+    const blocked=[];
+    for(const range of intervals){
+      const last=blocked[blocked.length-1];
+      if(last&&range[0]<last[1])last[1]=Math.max(last[1],range[1]);
+      else blocked.push(range);
+    }
+    let x=pink.x;
+    for(const [left,right] of blocked){
+      if(x<=left)break;
+      if(x<right)x=right;
+    }
+    if(x<=maxX)return x;
+    x=pink.x;
+    for(let i=blocked.length-1;i>=0;i--){
+      const [left,right]=blocked[i];
+      if(x>=right)break;
+      if(x>left)x=left;
+    }
+    return x>=minX?x:null;
+  }
 
   function touchingStatus({balls,ballOn,nominatedColour=null,freeBallNominee=null}) {
     const cue=balls.find(b=>b.n===0 && active(b));
@@ -359,7 +393,7 @@ const PCOLCore = (() => {
     const requiresInHand=!!cueBall && (removed.has(cueBall.i) || !active(cueBall));
     return {score,foulCode,nextBallOn,respots,requiresInHand,ballOnUsed:on,penalty:foulCode?penalty:0,freeBallNominee:validNominee?nominee.i:null,reasons,freeBallSafety,canonicalPotted,continueBreak:score>0,touching:{indices:touching.map(b=>b.i),deemedHit,pushedIndices:unique(pushedTouching)}};
   }
-  return Object.freeze({RADIUS,RED,COLOUR_ALL,FOUL,TOUCH_EPS,ballOnNumbers,touchingStatus,remainingPoints,concessionStatus,isSnookered,hasDirectHit,inferColour,evaluateJump,adjudicate});
+  return Object.freeze({RADIUS,RED,COLOUR_ALL,FOUL,TOUCH_EPS,ballOnNumbers,pinkRespotX,touchingStatus,remainingPoints,concessionStatus,isSnookered,hasDirectHit,inferColour,evaluateJump,adjudicate});
 })();
 
 const PCOLCelebration = (() => {
@@ -616,7 +650,7 @@ const PCOLPractice = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.2.3";
+  const VERSION = "0.2.4";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）']];
@@ -633,6 +667,38 @@ const PCOLPractice = (() => {
   }
   function balls(g) {
     return g._simulator.getBalls().map(b => ({ i: b.index, n: b.number, active: b.active, x: b.position.x, y: b.position.y, z: b.position.z, r: b.radius }));
+  }
+  function hookColourRespots(s) {
+    const ref=s.g._model._locRef;
+    if(!ref||s.refHooks.has(ref))return;
+    s.refHooks.add(ref);
+    wrap(ref,'_liveRespotColorBalls',original=>function(list,sim){
+      if(!list.some(b=>b.number===6))return original.call(this,list,sim);
+      const clearance=1.05*sim.ballRadius,reserved=new Set();
+      // Preserve the author's own-spot and highest-available-spot stages.
+      for(let i=list.length-1;i>=0;i--){
+        const b=list[i];reserved.add(b.number);
+        if(!sim.touchBalls(b.index,b.spot,clearance)){list.splice(i,1);sim.respotIndexDefault(b.index);}
+      }
+      list.sort((a,b)=>a.number-b.number);
+      const colours=sim.getBalls().filter(b=>b.number>=2).sort((a,b)=>b.number-a.number);
+      for(const spotBall of colours){
+        if(!list.length)break;
+        const b=list[list.length-1];
+        if(!reserved.has(spotBall.number)&&!sim.touchBalls(b.index,spotBall.spot,clearance))sim.resetBallPosition(list.pop(),spotBall.spot);
+      }
+      // At this point all spots are unavailable. Higher colours go first.
+      while(list.length){
+        const b=list.pop();
+        if(b.number!==6){original.call(this,[b],sim);continue;}
+        const ground=sim.ground,margin=sim.ballRadius+2*PCOLCore.TOUCH_EPS;
+        const minX=ground.centerPosition.x-ground.size.x/2+margin,maxX=ground.centerPosition.x+ground.size.x/2-margin;
+        const bs=sim.getBalls().map(b=>({i:b.index,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,r:b.radius}));
+        const x=PCOLCore.pinkRespotX(bs,{i:b.index,...b.spot,r:b.radius},minX,maxX);
+        if(x===null)throw new Error('No legal pink-ball respot position');
+        sim.resetBallXYZ(b,x,b.spot.y,b.spot.z);
+      }
+    });
   }
   function scores(m) { return m._players.map((p, i, ps) => p.pts - (ps.length > 1 ? ps[(i + 1) % ps.length].penalty : 0)); }
   function actor(s) { return s.hotseat ? `玩家 ${s.g._model._gContext.playerIndex + 1}` : '你'; }
@@ -1255,7 +1321,8 @@ const PCOLPractice = (() => {
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
-    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;
+    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;s.refHooks=new WeakSet();
+    hookColourRespots(s);
     API.app = app;
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
@@ -1319,6 +1386,7 @@ const PCOLPractice = (() => {
         }
         s.practice=this._players.length===1?(s.requestedPractice||'standard'):null;
         s.requestedPractice=null;s.openEditorOnReady=s.practice==='custom';
+        hookColourRespots(s);
         ready(payload);
       });
     });

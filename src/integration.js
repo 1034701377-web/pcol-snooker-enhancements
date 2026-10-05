@@ -18,6 +18,38 @@
   function balls(g) {
     return g._simulator.getBalls().map(b => ({ i: b.index, n: b.number, active: b.active, x: b.position.x, y: b.position.y, z: b.position.z, r: b.radius }));
   }
+  function hookColourRespots(s) {
+    const ref=s.g._model._locRef;
+    if(!ref||s.refHooks.has(ref))return;
+    s.refHooks.add(ref);
+    wrap(ref,'_liveRespotColorBalls',original=>function(list,sim){
+      if(!list.some(b=>b.number===6))return original.call(this,list,sim);
+      const clearance=1.05*sim.ballRadius,reserved=new Set();
+      // Preserve the author's own-spot and highest-available-spot stages.
+      for(let i=list.length-1;i>=0;i--){
+        const b=list[i];reserved.add(b.number);
+        if(!sim.touchBalls(b.index,b.spot,clearance)){list.splice(i,1);sim.respotIndexDefault(b.index);}
+      }
+      list.sort((a,b)=>a.number-b.number);
+      const colours=sim.getBalls().filter(b=>b.number>=2).sort((a,b)=>b.number-a.number);
+      for(const spotBall of colours){
+        if(!list.length)break;
+        const b=list[list.length-1];
+        if(!reserved.has(spotBall.number)&&!sim.touchBalls(b.index,spotBall.spot,clearance))sim.resetBallPosition(list.pop(),spotBall.spot);
+      }
+      // At this point all spots are unavailable. Higher colours go first.
+      while(list.length){
+        const b=list.pop();
+        if(b.number!==6){original.call(this,[b],sim);continue;}
+        const ground=sim.ground,margin=sim.ballRadius+2*PCOLCore.TOUCH_EPS;
+        const minX=ground.centerPosition.x-ground.size.x/2+margin,maxX=ground.centerPosition.x+ground.size.x/2-margin;
+        const bs=sim.getBalls().map(b=>({i:b.index,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,r:b.radius}));
+        const x=PCOLCore.pinkRespotX(bs,{i:b.index,...b.spot,r:b.radius},minX,maxX);
+        if(x===null)throw new Error('No legal pink-ball respot position');
+        sim.resetBallXYZ(b,x,b.spot.y,b.spot.z);
+      }
+    });
+  }
   function scores(m) { return m._players.map((p, i, ps) => p.pts - (ps.length > 1 ? ps[(i + 1) % ps.length].penalty : 0)); }
   function actor(s) { return s.hotseat ? `玩家 ${s.g._model._gContext.playerIndex + 1}` : '你'; }
   function startHotseat(s) {
@@ -639,7 +671,8 @@
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
-    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;
+    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;s.refHooks=new WeakSet();
+    hookColourRespots(s);
     API.app = app;
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
@@ -703,6 +736,7 @@
         }
         s.practice=this._players.length===1?(s.requestedPractice||'standard'):null;
         s.requestedPractice=null;s.openEditorOnReady=s.practice==='custom';
+        hookColourRespots(s);
         ready(payload);
       });
     });
