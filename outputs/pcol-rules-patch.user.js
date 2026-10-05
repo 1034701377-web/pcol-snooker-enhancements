@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.2.2
+// @version      0.2.3
 // @description  Snooker rules, century celebrations, custom practice layouts and stroke retry.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -494,10 +494,10 @@ const PCOLPractice = (() => {
     root.setAttribute('aria-label', '自由摆球');
     root.innerHTML = `
       <style>
-        .pe-palette-panel{position:fixed;right:14px;top:86px;width:154px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;overscroll-behavior:contain;z-index:1000;pointer-events:auto;box-sizing:border-box;padding:10px;border:1px solid #fffffff0;border-radius:20px;background:rgba(248,250,253,.92);backdrop-filter:blur(22px) saturate(110%);box-shadow:0 10px 35px #18243126,inset 0 1px 0 #ffffff;color:#1d1d1f;font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;scrollbar-width:thin;scrollbar-color:#a6acb5 transparent}
-        .pe-palette-panel[hidden]{display:none}.pe-palette-panel *{box-sizing:border-box}.pe-palette-panel button{font:inherit;cursor:pointer}.pe-palette-panel button:disabled{opacity:.38;cursor:default}.pe-palette-panel button:focus-visible{outline:2px solid #007aff;outline-offset:2px}
-        .pe-heading{margin:0 0 8px;padding:5px 2px 7px;text-align:center;font-size:16px;font-weight:600;letter-spacing:.02em;cursor:grab;touch-action:none;user-select:none}.pe-heading:active{cursor:grabbing}.pe-ball-list{display:grid;gap:3px}.pe-ball-button{display:flex;justify-content:center;align-items:center;width:100%;height:36px;padding:3px;border:1px solid transparent;border-radius:11px;background:transparent;transition:background .12s,border-color .12s}.pe-ball-button:hover{background:#ffffff80}.pe-ball-button[aria-pressed="true"]{background:#007aff12;border-color:#007aff85}.pe-orb{display:block;width:27px;height:27px;flex-shrink:0;border-radius:50%;background:radial-gradient(circle at 30% 22%,#ffffffc0,transparent 36%),var(--ball);box-shadow:inset -4px -5px 7px #0006,inset 1px 1px 2px #ffffff80,0 2px 4px #202d392b}
-        .pe-controls{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px;padding-top:9px;border-top:1px solid #59616d1a}.pe-control{padding:7px 1px;color:#4b515a;border:1px solid #ffffffdb;border-radius:8px;background:#ffffff8a;font-size:10px!important;white-space:nowrap}.pe-control:hover:not(:disabled){background:#ffffff;color:#007aff}.pe-cancel{grid-column:1/-1;padding:6px 1px;border-color:transparent;background:transparent;color:#6e6e73}
+        .pe-palette-panel{position:fixed;right:14px;top:86px;width:104px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;overscroll-behavior:contain;z-index:1000;pointer-events:auto;box-sizing:border-box;padding:10px;border:1px solid #64726070;border-radius:15px;background:linear-gradient(150deg,#172b25f5,#0b1916f5);box-shadow:0 12px 38px #0007;color:#e7eee9;font:12px/1.4 "Segoe UI","Microsoft YaHei",sans-serif;scrollbar-width:thin;scrollbar-color:#526a59 transparent}
+        .pe-palette-panel[hidden]{display:none}.pe-palette-panel *{box-sizing:border-box}.pe-palette-panel button{font:inherit;cursor:pointer}.pe-palette-panel button:disabled{opacity:.38;cursor:default}.pe-palette-panel button:focus-visible{outline:2px solid #d7b778;outline-offset:2px}
+        .pe-heading{margin:0 0 8px;padding:5px 2px 7px;text-align:center;font-size:16px;font-weight:600;letter-spacing:.02em;cursor:grab;touch-action:none;user-select:none}.pe-heading:active{cursor:grabbing}.pe-ball-list{display:grid;gap:3px}.pe-ball-button{display:flex;justify-content:center;align-items:center;width:100%;height:36px;padding:3px;border:1px solid transparent;border-radius:9px;background:transparent;transition:background .12s,border-color .12s}.pe-ball-button:hover{background:#ffffff0b}.pe-ball-button[aria-pressed="true"]{background:#d0b17718;border-color:#d0b177}.pe-orb{display:block;width:27px;height:27px;flex-shrink:0;border-radius:50%;background:radial-gradient(circle at 30% 22%,#ffffffa8,transparent 36%),var(--ball);box-shadow:inset -4px -5px 7px #0007,inset 1px 1px 2px #ffffff55,0 3px 5px #0008}
+        .pe-controls{display:grid;grid-template-columns:1fr;gap:5px;margin-top:9px;padding-top:9px;border-top:1px solid #ffffff12}.pe-control{padding:7px 1px;color:#c3d2c8;border:1px solid #ffffff20;border-radius:7px;background:#ffffff05;font-size:10px!important;white-space:nowrap}.pe-control:hover:not(:disabled){background:#ffffff0c;border-color:#d0b17770}.pe-cancel{padding:6px 1px;border-color:transparent;background:transparent;color:#829c8c}
         @media(max-height:590px){.pe-heading{margin-bottom:5px;padding-top:3px}.pe-ball-button{height:32px}.pe-orb{width:25px;height:25px}.pe-controls{margin-top:7px;padding-top:7px}}
         @media(prefers-reduced-motion:reduce){.pe-ball-button{transition:none}}
       </style>
@@ -616,7 +616,7 @@ const PCOLPractice = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.2.2";
+  const VERSION = "0.2.3";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）']];
@@ -744,7 +744,7 @@ const PCOLPractice = (() => {
     shadow.innerHTML = `<style>
       *{box-sizing:border-box}button{font:inherit;cursor:pointer;border:1px solid #ab8544;border-radius:5px;background:#28241b;color:#fff;padding:8px 12px}button:hover{background:#65512e}button:focus-visible{outline:2px solid #f5c368;outline-offset:2px}button.primary{background:#aa782d;color:#fff}button:disabled{opacity:.45;cursor:default}.bar{display:flex;gap:9px;align-items:center;padding:7px 10px;background:#171610e8;border:1px solid #88734c;border-radius:6px}.bar button{padding:3px 7px}.veil{position:fixed;inset:0;display:grid;place-items:center;background:#0009}.panel{width:min(540px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:#171914;border:1px solid #b69758;border-radius:10px;padding:24px;box-shadow:0 18px 60px #0008}.panel h2{font-size:21px;margin:0 0 12px}.panel p{margin:9px 0 18px;color:#dedbcd}.choices{display:flex;gap:9px;flex-wrap:wrap}.note{font-size:12px;color:#b8baa9;margin-top:14px}
       [hidden]{display:none!important}.bar{max-width:calc(100vw - 16px);flex-wrap:wrap}.drag{cursor:grab;touch-action:none;user-select:none;padding:0 4px;color:#e7c986;font-size:18px}.drag:active{cursor:grabbing}
-      .bar[data-practice="true"]{background:rgba(248,250,253,.92);color:#1d1d1f;border:1px solid #ffffffcf;border-radius:16px;padding:9px 11px 9px 15px;gap:14px;box-shadow:0 8px 28px #0002,inset 0 1px #fff;backdrop-filter:blur(22px) saturate(110%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}.bar[data-practice="true"] .status{cursor:grab;touch-action:none;user-select:none;font-weight:500}.bar[data-practice="true"] button{background:#007aff0c;color:#007aff;border:1px solid #007aff1a;border-radius:9px;padding:5px 10px}.bar[data-practice="true"] button:hover{background:#007aff1c}.bar[data-practice="true"] button:disabled{color:#8e8e93;background:#8e8e930b;border-color:transparent;opacity:1}
+      .bar[data-practice="true"] .status{cursor:grab;touch-action:none;user-select:none;font-weight:500}
     </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status" title="拖动浮窗；双击恢复位置"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="practice-controls"></div><div class="modal"></div>`;
     document.documentElement.appendChild(host);
     s.host = host; s.shadow = shadow;
