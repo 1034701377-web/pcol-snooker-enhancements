@@ -2,6 +2,21 @@
 
 在原版 [PCOL](http://www.heyzxz.me/pcol/) 上运行的 Tampermonkey 用户脚本，支持本地“人格分裂”双人局和斯诺克规则改进。
 
+## English overview
+
+PCOL Snooker Enhancements is a community-maintained Tampermonkey userscript developed by a snooker enthusiast. It builds on [PCOL](http://www.heyzxz.me/pcol/) by [heyzxz](https://github.com/heyzxz/all-about-pcol), using the game's existing rendering, physics and controls.
+
+- Snooker rule improvements: foul response options, cue-ball placement, free balls, jump-shot checks, colour nominations, touching-ball handling and corrected pink-ball respotting.
+- Local hotseat play, including controlling both players yourself.
+- Custom layouts edited directly on the 3D table, standard solo practice, and retry of the last completed shot with the table and scoring state restored.
+- Celebrations for century breaks and the 147/155 break milestones.
+
+**Install:** with Tampermonkey installed in Chrome, open the [userscript installation link](https://raw.githubusercontent.com/1034701377-web/pcol-snooker-enhancements/main/outputs/pcol-rules-patch.user.js), confirm installation, then reload PCOL. The userscript adds no server or external AI dependency.
+
+**Scope and limitations:** the script targets PCOL `0.1.0.03152018`. Some referee decisions, including whether an obstructed shot warrants a miss and certain ball-in-hand free-ball situations, still require manual confirmation. Tied-score black-ball play has not been fully adapted, and the original AI cannot automatically handle every added referee choice. This is a community enhancement, not a claim of complete competition-rule compliance. Custom free practice leaves potted object balls off the table and does not record a scored snooker break; standard practice uses the scoring rules.
+
+The original game remains credited to heyzxz. This repository does not distribute a full copy of PCOL or its asset bundle. The detailed usage instructions below are currently in Chinese.
+
 ## 安装
 
 Chrome 安装 Tampermonkey 后，打开 [用户脚本安装链接](https://raw.githubusercontent.com/1034701377-web/pcol-snooker-enhancements/main/outputs/pcol-rules-patch.user.js)，在油猴安装页确认安装或更新。刷新游戏页面后生效。
@@ -57,7 +72,7 @@ npm test
 
 - `src/rules-core.js`：纯规则与几何计算。
 - `src/integration.js`：游戏接入、控制器和界面；版本占位符由构建替换。
-- `src/celebration.js`：破百庆祝动画；`src/practice-editor.js`：摆球界面与几何校验。
+- `src/celebration.js`：破百及 147/155 庆祝动画；`src/practice-editor.js`：摆球界面与几何校验。
 - `outputs/pcol-rules-patch.user.js`：完整可安装脚本，由构建生成。
 - `test/`：规则和原版模型交互的回归测试；`fixtures/pcol-model.js` 是从原版游戏提取的最小模型测试资源，不会打包到用户脚本。
 
