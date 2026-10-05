@@ -61,7 +61,6 @@
   }
   function statusLine(s) {
     const on = s.g._model._gContext.ballOn;
-    if (s.practice === 'custom') return `自由练习 · 台上 ${balls(s.g).filter(b => b.active && b.n > 0).length} 颗目标球${s.lastResult?.pottedCount != null ? ` · 本杆进 ${s.lastResult.pottedCount} 球` : ''}`;
     if (s.conceded) return '本局已认输';
     if (s.pending) return `犯规 ${-s.pending.result.score} 分 · 等待选择`;
     if (s.freeBallNominee != null) return `自由球：${COLOURS[s.g._simulator.getBallAtIndex(s.freeBallNominee).number]}（按${ballOnLabel(on)}计）`;
@@ -84,12 +83,12 @@
     s.host.style.bottom = 'auto';
   }
   function enablePanelDrag(s) {
-    const handle = s.shadow.querySelector('.drag');
     let drag = null;
     try {
       const stored = JSON.parse(window.localStorage.getItem(PANEL_POSITION_KEY));
       if (Number.isFinite(stored?.x) && Number.isFinite(stored?.y)) s.panelPosition = stored;
     } catch (_) { /* Storage can be disabled; dragging still works this session. */ }
+    for(const handle of [s.shadow.querySelector('.drag'),s.shadow.querySelector('.status')]){
     handle.onpointerdown = e => {
       if (e.button !== 0 || s.modal) return;
       e.preventDefault();
@@ -115,6 +114,7 @@
       Object.assign(s.host.style,{left:'16px',top:'auto',bottom:'14px'});
       try { window.localStorage.removeItem(PANEL_POSITION_KEY); } catch (_) {}
     };
+    }
     const resize = () => { if (s.panelPosition) positionPanel(s,s.panelPosition.x,s.panelPosition.y); };
     window.addEventListener('resize',resize);
     patches.push(() => window.removeEventListener('resize',resize));
@@ -128,13 +128,13 @@
     shadow.innerHTML = `<style>
       *{box-sizing:border-box}button{font:inherit;cursor:pointer;border:1px solid #ab8544;border-radius:5px;background:#28241b;color:#fff;padding:8px 12px}button:hover{background:#65512e}button:focus-visible{outline:2px solid #f5c368;outline-offset:2px}button.primary{background:#aa782d;color:#fff}button:disabled{opacity:.45;cursor:default}.bar{display:flex;gap:9px;align-items:center;padding:7px 10px;background:#171610e8;border:1px solid #88734c;border-radius:6px}.bar button{padding:3px 7px}.veil{position:fixed;inset:0;display:grid;place-items:center;background:#0009}.panel{width:min(540px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:#171914;border:1px solid #b69758;border-radius:10px;padding:24px;box-shadow:0 18px 60px #0008}.panel h2{font-size:21px;margin:0 0 12px}.panel p{margin:9px 0 18px;color:#dedbcd}.choices{display:flex;gap:9px;flex-wrap:wrap}.note{font-size:12px;color:#b8baa9;margin-top:14px}
       [hidden]{display:none!important}.bar{max-width:calc(100vw - 16px);flex-wrap:wrap}.drag{cursor:grab;touch-action:none;user-select:none;padding:0 4px;color:#e7c986;font-size:18px}.drag:active{cursor:grabbing}
-    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="edit" hidden>摆球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="modal"></div>`;
+      .bar[data-practice="true"]{background:rgba(248,250,253,.92);color:#1d1d1f;border:1px solid #ffffffcf;border-radius:16px;padding:9px 11px 9px 15px;gap:14px;box-shadow:0 8px 28px #0002,inset 0 1px #fff;backdrop-filter:blur(22px) saturate(110%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}.bar[data-practice="true"] .status{cursor:grab;touch-action:none;user-select:none;font-weight:500}.bar[data-practice="true"] button{background:#007aff0c;color:#007aff;border:1px solid #007aff1a;border-radius:9px;padding:5px 10px}.bar[data-practice="true"] button:hover{background:#007aff1c}.bar[data-practice="true"] button:disabled{color:#8e8e93;background:#8e8e930b;border-color:transparent;opacity:1}
+    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status" title="拖动浮窗；双击恢复位置"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="practice-controls"></div><div class="modal"></div>`;
     document.documentElement.appendChild(host);
     s.host = host; s.shadow = shadow;
     enablePanelDrag(s);
     shadow.querySelector('.hotseat').onclick = () => startHotseat(s);
     shadow.querySelector('.practice').onclick = () => choosePractice(s);
-    shadow.querySelector('.edit').onclick = () => openPracticeEditor(s);
     shadow.querySelector('.retry').onclick = () => retryPractice(s);
     shadow.querySelector('.choose').onclick = () => chooseBall(s);
     shadow.querySelector('.concede').onclick = () => showConcession(s);
@@ -146,21 +146,24 @@
     if (!s.host) mount(s);
     const live = s.app._currentController === s.g && s.g._model._gState !== 1;
     const home = s.app._currentController === s.app._controllers.home && s.app._controllers.home?.state === 3;
+    const custom=s.practice==='custom',replay=live && s.g._activeSubControl?.name==='replay';
+    const controlsVisible=live && custom && !replay && s.g._model._gState===4 && !s.shot && !s.practiceControlsHidden && !s.modal;
     s.host.style.display = live || home ? 'block' : 'none';
-    s.shadow.querySelector('.bar').hidden = live && s.g._activeSubControl?.name === 'replay';
+    s.shadow.querySelector('.bar').hidden = replay || (live && custom && !controlsVisible);
+    s.shadow.querySelector('.bar').setAttribute('data-practice',String(live && custom));
+    s.shadow.querySelector('.drag').hidden=live && custom;
     s.shadow.querySelector('.hotseat').hidden = !home;
     s.shadow.querySelector('.practice').hidden = !home;
-    s.shadow.querySelector('.edit').hidden = !(live && s.practice === 'custom');
-    s.shadow.querySelector('.edit').disabled = !practiceReady(s) || s.modal || Boolean(s.placement);
     const retry = s.shadow.querySelector('.retry');
     retry.hidden = !(live && s.practice);
     retry.disabled = !canRetryPractice(s) || s.modal;
     retry.title = '恢复上一杆前的球位、分数和单杆分';
     const touching=live?touchingNotice(s):'';
-    s.shadow.querySelector('.status').textContent = home ? 'PCOL · 规则与练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
+    s.shadow.querySelector('.status').textContent = home ? 'PCOL · 规则与练习' : custom ? '自由练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
     const eligible = live && !s.pending && s.g._model._gState === 4 && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && (s.freeBallAvailable || s.freeBallReview || s.g._model._gContext.ballOn === 252);
     s.shadow.querySelector('.choose').hidden = !eligible;
     s.shadow.querySelector('.concede').hidden = !(live && concessionInfo(s).available && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && !s.modal);
+    if(s.editor){s.editor.setVisible(controlsVisible);if(controlsVisible)s.editor.update(editableBalls(s),s.placement?.selectedIndex ?? null,Boolean(s.placement));}
     if ((live || home) && s.panelPosition && !s.shadow.querySelector('.bar').hidden) positionPanel(s,s.panelPosition.x,s.panelPosition.y);
   }
   function closeModal(s) {
@@ -288,26 +291,37 @@
     sim.reset(false, true);
     sim._world.accumulator = 0;
   }
-  function openPracticeEditor(s) {
-    if (s.practice !== 'custom' || !practiceReady(s) || s.modal || s.placement) return false;
-    s.celebration.clear();
-    s.placement={before:takeSnapshot(s),bounds:practiceBounds(s),selectedIndex:0,changed:false};
+  function ensurePracticePanel(s) {
+    if(s.editor)return;
     const changeLayout=layout=>{
       if(!practiceReady(s))return;
+      if(!s.placement)openPracticeEditor(s);
       placePracticeLayout(s,layout);s.placement.changed=true;syncResponse(s);refreshPlacement(s);
     };
-    s.editor=PCOLPractice.createEditor({document,container:s.shadow.querySelector('.modal'),balls:editableBalls(s),
-      onSelect:n=>selectPlacementBall(s,n),
-      onSelectRed:i=>selectPlacementBall(s,1,i),
-      onRemove:()=>{const layout=editableBalls(s),b=layout.find(b=>b.i===s.placement.selectedIndex);if(b.n===0)return;b.active=false;changeLayout(layout);},
+    s.editor=PCOLPractice.createEditor({document,window,container:s.shadow.querySelector('.practice-controls'),balls:editableBalls(s),
+      onSelect:n=>{if(!s.placement&&!openPracticeEditor(s))return;selectPlacementBall(s,n);},
       onClear:()=>changeLayout(editableBalls(s).map(b=>({...b,active:b.n===0}))),
       onStandard:()=>changeLayout(editableBalls(s).map(b=>({...b,...b.spot,active:true}))),
-      onDone:()=>finishPracticeEditor(s,true),onCancel:()=>finishPracticeEditor(s,false)
+      onCancel:()=>finishPracticeEditor(s,false)
     });
-    const escape=e=>{if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();finishPracticeEditor(s,false);}};
-    s.g._gView.canvas.addEventListener('keydown',escape,true);
-    s.shadow.addEventListener('keydown',escape,true);
-    s.placement.removeEvents=()=>{s.g._gView.canvas.removeEventListener('keydown',escape,true);s.shadow.removeEventListener('keydown',escape,true);};
+    const shortcut=e=>{
+      if((e.key==='w'||e.key==='W'||e.key==='ArrowUp')&&practiceReady(s)&&!s.modal){
+        e.preventDefault();e.stopImmediatePropagation();s.g._fpc.gotoState1();s.g._gView.canvas.focus();
+      }else if(e.key==='Escape'&&s.placement){e.preventDefault();e.stopImmediatePropagation();finishPracticeEditor(s,false);}
+    };
+    const canvas=s.g._gView.canvas;
+    canvas.addEventListener('keydown',shortcut,true);s.shadow.addEventListener('keydown',shortcut,true);
+    s.removePracticeKeys=()=>{canvas.removeEventListener('keydown',shortcut,true);s.shadow.removeEventListener('keydown',shortcut,true);};
+  }
+  function destroyPracticePanel(s) {
+    if(!s.editor)return;
+    s.removePracticeKeys();s.editor.destroy();s.editor=null;
+  }
+  function openPracticeEditor(s) {
+    if (s.practice !== 'custom' || !practiceReady(s) || s.modal || s.placement) return false;
+    ensurePracticePanel(s);
+    s.celebration.clear();s.practiceControlsHidden=false;
+    s.placement={before:takeSnapshot(s),bounds:practiceBounds(s),selectedIndex:0,changed:false};
     const hand=s.g._subControl.inHand;
     hand._closeTip();hand._tipPopped=true;hand._firstLookToSet=true;
     s.g._activateSubControl('inHand');
@@ -326,7 +340,7 @@
     const b=s.g._simulator.getBallAtIndex(s.placement.selectedIndex),hand=s.g._subControl.inHand,view=s.g._gView;
     if(b.active)view.showRespotIcons(b.position);else view._respotIcon0.alpha=0;
     hand._needsUpdate=true;hand._isValidSpot=false;
-    s.editor.update(editableBalls(s),b.index);
+    s.editor.update(editableBalls(s),b.index,true);
     view.requireRender();
   }
   function placeSelectedBall(s,position) {
@@ -345,7 +359,7 @@
   function finishPracticeEditor(s,keep) {
     const edit=s.placement;
     if(!edit)return false;
-    edit.removeEvents();s.placement=null;s.editor.destroy();s.editor=null;
+    s.placement=null;s.practiceControlsHidden=keep;
     if(!keep){restoreSnapshot(s,edit.before);return true;}
     if(edit.changed){
       s.practiceLayout=editableBalls(s);s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;
@@ -391,6 +405,7 @@
   function recordCompletedStroke(s, shot, result) {
     s.lastTrace=shot.trace;s.lastContacts=shot.contacts;s.lastBefore=shot.before;s.lastResult=result;
     if (s.practice) s.practiceBefore=shot.before;
+    if (s.practice==='custom') s.practiceControlsHidden=false;
     s.log.push({kind:'stroke',round:s.g._model._gContext.nRounds,offender:shot.before.context.playerIndex,result:clone(result),score:scores(s.g._model),traceSamples:shot.trace.length});
     if(s.log.length>100)s.log.shift();
     s.shot=null;resetTurn(s);
@@ -624,7 +639,7 @@
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
-    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;
+    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;
     API.app = app;
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
@@ -639,7 +654,16 @@
       if(s.placement){g._gView.syncBalls(sim.getBalls(),sim.evolution);g._gView.requireRender();return;}
       return original.apply(this,args);
     });
-    wrap(g,'exit',original=>function(...args){if(s.placement)finishPracticeEditor(s,false);return original.apply(this,args);});
+    wrap(g,'exit',original=>function(...args){if(s.placement)finishPracticeEditor(s,false);destroyPracticePanel(s);return original.apply(this,args);});
+    wrap(g._fpc,'gotoState1',original=>function(...args){
+      if(s.practice==='custom'){if(s.placement)finishPracticeEditor(s,true);s.practiceControlsHidden=true;render(s);}
+      return original.apply(this,args);
+    });
+    wrap(g._fpc,'gotoState0',original=>function(...args){
+      const r=original.apply(this,args);
+      if(s.practice==='custom'&&m._gState===4&&!s.shot&&!s.placement){s.practiceControlsHidden=false;render(s);}
+      return r;
+    });
     const hand=g._subControl.inHand;
     wrap(hand,'_showTip',original=>function(...args){if(s.placement){this._tipPopped=true;return;}return original.apply(this,args);});
     wrap(hand,'_onActvate',original=>function(...args){const r=original.apply(this,args);if(s.placement)this._firstLookToSet=true;return r;});
@@ -656,7 +680,7 @@
     wrap(g,'updateActing',original=>function(...args){
       const r=original.apply(this,args);
       // Wait until the stock first-play controls dialog has been closed.
-      if(s.openEditorOnReady && practiceReady(s)){s.openEditorOnReady=false;openPracticeEditor(s);}
+      if(s.openEditorOnReady && practiceReady(s)){s.openEditorOnReady=false;ensurePracticePanel(s);render(s);}
       return r;
     });
     const home=app._controllers.home;
@@ -667,6 +691,7 @@
     wrap(m, 'asyncLaunch', original => function (ready) {
       s.hotseat = s.requestedHotseat;
       s.requestedHotseat = false;
+      destroyPracticePanel(s);s.practiceControlsHidden=false;
       s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;
       return original.call(this, payload => {
         if (s.hotseat) {
@@ -761,6 +786,7 @@
     });
     wrap(m, '_onResetResponse', original => function (...args) {
       if(s.placement)finishPracticeEditor(s,false);
+      s.practiceControlsHidden=false;
       s.celebration.clear();
       s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;
       s.pending = null; s.shot = null; s.conceded = null; s.concessionTurn = null; resetTurn(s); if (s.modal) closeModal(s);
@@ -788,7 +814,7 @@
     chooseBall: () => active && chooseBall(active),
     resolveFoul: action => active && resolveFoul(active, action),
     concede: () => active && concedeFrame(active),
-    uninstall: () => { if(active?.placement)finishPracticeEditor(active,false);if (active?.modal) closeModal(active); active?.celebration.destroy(); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
+    uninstall: () => { if(active?.placement)finishPracticeEditor(active,false);if(active)destroyPracticePanel(active);if (active?.modal) closeModal(active); active?.celebration.destroy(); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
   };
   function instrument(chunk) {
     const modules = chunk?.[1], original = modules?.[10];

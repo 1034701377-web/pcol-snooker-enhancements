@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.2.1
+// @version      0.2.2
 // @description  Snooker rules, century celebrations, custom practice layouts and stroke retry.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -476,8 +476,6 @@ const PCOLPractice = (() => {
   const NAMES = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const COLOURS = ['#f7f6ec', '#db2538', '#f5ce42', '#329866', '#a16b42', '#418cdb', '#ef9cba', '#282d35'];
   const EPSILON = 1e-6;
-  const copy = layout => layout.map(b => ({ ...b, spot: { ...b.spot } }));
-  let editorCount = 0;
 
   function placementError(layout, candidate, bounds) {
     const { x, z, r } = candidate;
@@ -489,100 +487,136 @@ const PCOLPractice = (() => {
     return '';
   }
 
-  function createEditor({ document, container, balls, onSelect, onSelectRed, onRemove, onClear, onStandard, onDone, onCancel }) {
+  function createEditor({ document, window, container, balls, onSelect, onClear, onStandard, onCancel }) {
+    const POSITION_KEY = 'pcol-rules-patch:practice-palette-position';
     const root = document.createElement('aside');
     root.className = 'pe-palette-panel';
-    root.setAttribute('aria-label', '三维球台摆球工具');
+    root.setAttribute('aria-label', '自由摆球');
     root.innerHTML = `
       <style>
-        .pe-palette-panel{position:fixed;right:14px;top:100px;width:165px;max-height:calc(100dvh - 114px);overflow-y:auto;overscroll-behavior:contain;z-index:1000;pointer-events:auto;box-sizing:border-box;padding:12px 10px 10px;border:1px solid #64726070;border-radius:15px;background:linear-gradient(150deg,#172b25f5,#0b1916f5);box-shadow:0 12px 38px #0007;color:#e7eee9;font:12px/1.4 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;scrollbar-width:thin;scrollbar-color:#526a59 transparent}
-        .pe-palette-panel *{box-sizing:border-box}.pe-palette-panel button,.pe-palette-panel select{font:inherit}.pe-palette-panel button{cursor:pointer}.pe-palette-panel button:disabled{opacity:.35;cursor:default}.pe-palette-panel button:focus-visible,.pe-palette-panel select:focus-visible{outline:2px solid #e1c18b;outline-offset:2px}
-        .pe-eyebrow{color:#c9ad76;letter-spacing:.15em;font-size:8px;font-weight:700}.pe-heading{margin:2px 0 7px;font-size:17px;font-weight:600;letter-spacing:.08em}.pe-hint{margin:0 0 10px;color:#a7bbae;font-size:10px;line-height:1.55}.pe-green{color:#80d3a2}.pe-orange{color:#e7b076}
-        .pe-ball-list{display:grid;gap:3px}.pe-ball-button{display:flex;align-items:center;gap:10px;width:100%;padding:6px 8px;text-align:left;color:#d5e1d8;border:1px solid transparent;border-radius:9px;background:#ffffff03}.pe-ball-button:hover{background:#ffffff0b}.pe-ball-button[aria-pressed="true"]{background:#d0b17718;border-color:#d0b177;color:#f2dca9}.pe-orb{flex-shrink:0;display:block;width:24px;height:24px;border-radius:50%;background:radial-gradient(circle at 30% 23%,#ffffffa8 0,transparent 34%),var(--ball);box-shadow:inset -4px -5px 7px #0007,inset 1px 1px 2px #ffffff55,0 3px 5px #0008}.pe-ball-text{display:block;min-width:0}.pe-ball-name{display:block;font-size:12px}.pe-ball-state{display:block;margin-top:1px;color:#8fa699;font-size:9px;font-variant-numeric:tabular-nums}
-        .pe-red-select{display:block;width:calc(100% - 8px);margin:2px 4px 5px;padding:5px 6px;border:1px solid #ffffff20;border-radius:6px;background:#10231c;color:#c5d5ca;font-size:10px!important}.pe-red-select option{background:#10231c}.pe-status{margin:9px 2px 8px;min-height:29px;color:#b9cdbd;font-size:10px;line-height:1.45;overflow-wrap:anywhere}.pe-controls{display:grid;grid-template-columns:1fr 1fr;gap:5px;border-top:1px solid #ffffff12;padding-top:9px}.pe-control{padding:6px 3px;color:#c3d2c8;border:1px solid #ffffff20;border-radius:7px;background:#ffffff05;font-size:10px!important}.pe-control:hover:not(:disabled){background:#ffffff0c}.pe-remove{grid-column:1/-1;color:#deb9aa}.pe-done{grid-column:1/-1;padding:8px 4px;background:#d6b779;color:#14231b;border-color:#d6b779;font-size:12px!important;font-weight:650}.pe-done:hover:not(:disabled){background:#e2c88f}.pe-cancel{grid-column:1/-1;border-color:transparent;background:transparent;color:#829c8c;padding:4px}.pe-cancel:hover:not(:disabled){color:#c9d7ce;background:#ffffff06}
-        @media(max-height:660px){.pe-palette-panel{top:82px;max-height:calc(100dvh - 92px);padding-top:9px;overflow-anchor:none}.pe-eyebrow{display:none}.pe-heading{font-size:15px;margin:0 0 4px}.pe-hint{font-size:9px;line-height:1.35;margin-bottom:4px}.pe-ball-list{gap:2px}.pe-ball-button{padding:3px 6px;gap:7px;min-height:28px}.pe-orb{width:20px;height:20px}.pe-ball-text{display:flex;align-items:center;gap:5px;white-space:nowrap}.pe-ball-name{font-size:11px}.pe-ball-state{font-size:8px;margin:0}.pe-red-select{padding:3px 6px;margin-bottom:2px}.pe-status{min-height:24px;line-height:1.25;font-size:9px;margin:5px 2px}.pe-controls{padding-top:5px;gap:4px}.pe-control{padding:4px 3px}.pe-done{padding:6px 4px}.pe-cancel{padding:2px}.pe-heading{font-size:15px}}
-        @media(max-width:580px){.pe-palette-panel{right:7px;width:150px}}
+        .pe-palette-panel{position:fixed;right:14px;top:86px;width:154px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;overscroll-behavior:contain;z-index:1000;pointer-events:auto;box-sizing:border-box;padding:10px;border:1px solid #fffffff0;border-radius:20px;background:rgba(248,250,253,.92);backdrop-filter:blur(22px) saturate(110%);box-shadow:0 10px 35px #18243126,inset 0 1px 0 #ffffff;color:#1d1d1f;font:12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;scrollbar-width:thin;scrollbar-color:#a6acb5 transparent}
+        .pe-palette-panel[hidden]{display:none}.pe-palette-panel *{box-sizing:border-box}.pe-palette-panel button{font:inherit;cursor:pointer}.pe-palette-panel button:disabled{opacity:.38;cursor:default}.pe-palette-panel button:focus-visible{outline:2px solid #007aff;outline-offset:2px}
+        .pe-heading{margin:0 0 8px;padding:5px 2px 7px;text-align:center;font-size:16px;font-weight:600;letter-spacing:.02em;cursor:grab;touch-action:none;user-select:none}.pe-heading:active{cursor:grabbing}.pe-ball-list{display:grid;gap:3px}.pe-ball-button{display:flex;justify-content:center;align-items:center;width:100%;height:36px;padding:3px;border:1px solid transparent;border-radius:11px;background:transparent;transition:background .12s,border-color .12s}.pe-ball-button:hover{background:#ffffff80}.pe-ball-button[aria-pressed="true"]{background:#007aff12;border-color:#007aff85}.pe-orb{display:block;width:27px;height:27px;flex-shrink:0;border-radius:50%;background:radial-gradient(circle at 30% 22%,#ffffffc0,transparent 36%),var(--ball);box-shadow:inset -4px -5px 7px #0006,inset 1px 1px 2px #ffffff80,0 2px 4px #202d392b}
+        .pe-controls{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px;padding-top:9px;border-top:1px solid #59616d1a}.pe-control{padding:7px 1px;color:#4b515a;border:1px solid #ffffffdb;border-radius:8px;background:#ffffff8a;font-size:10px!important;white-space:nowrap}.pe-control:hover:not(:disabled){background:#ffffff;color:#007aff}.pe-cancel{grid-column:1/-1;padding:6px 1px;border-color:transparent;background:transparent;color:#6e6e73}
+        @media(max-height:590px){.pe-heading{margin-bottom:5px;padding-top:3px}.pe-ball-button{height:32px}.pe-orb{width:25px;height:25px}.pe-controls{margin-top:7px;padding-top:7px}}
+        @media(prefers-reduced-motion:reduce){.pe-ball-button{transition:none}}
       </style>
-      <div class="pe-eyebrow">PRACTICE STUDIO</div>
       <h2 class="pe-heading">自由摆球</h2>
-      <p class="pe-hint">选球后在原球台点放<br><span class="pe-green">绿圈可放</span> · <span class="pe-orange">橙圈不可放</span></p>
       <div class="pe-ball-list"></div>
-      <div class="pe-status" role="status" aria-live="polite"></div>
       <div class="pe-controls">
-        <button type="button" class="pe-control pe-remove">移除选中球</button>
         <button type="button" class="pe-control pe-clear">清空目标球</button>
         <button type="button" class="pe-control pe-standard">标准球形</button>
-        <button type="button" class="pe-control pe-done">完成摆球 ↗</button>
         <button type="button" class="pe-control pe-cancel">取消本次编辑</button>
       </div>`;
     const $ = selector => root.querySelector(selector);
-    const list = $('.pe-ball-list');
+    const heading = $('.pe-heading');
     const buttons = [];
-    const redSelect = document.createElement('select');
-    redSelect.className = 'pe-red-select';
-    redSelect.setAttribute('aria-label', '添加或选择已放置的红球');
     for (let n = 0; n <= 7; n++) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'pe-ball-button';
       button.setAttribute('aria-label', `选择${NAMES[n]}`);
-      button.innerHTML = `<span class="pe-orb" style="--ball:${COLOURS[n]}" aria-hidden="true"></span><span class="pe-ball-text"><span class="pe-ball-name">${NAMES[n]}</span><span class="pe-ball-state"></span></span>`;
+      button.title = NAMES[n];
+      button.innerHTML = `<span class="pe-orb" style="--ball:${COLOURS[n]}" aria-hidden="true"></span>`;
       button.addEventListener('click', () => onSelect(n));
-      list.append(button);
+      $('.pe-ball-list').append(button);
       buttons.push(button);
-      if (n === 1) list.append(redSelect);
     }
-    redSelect.addEventListener('change', () => onSelectRed(redSelect.value === '' ? null : Number(redSelect.value)));
-    $('.pe-remove').addEventListener('click', onRemove);
     $('.pe-clear').addEventListener('click', onClear);
     $('.pe-standard').addEventListener('click', onStandard);
-    $('.pe-done').addEventListener('click', onDone);
     $('.pe-cancel').addEventListener('click', onCancel);
     for (const type of ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'mousemove', 'click', 'dblclick', 'wheel', 'contextmenu']) {
       root.addEventListener(type, event => event.stopPropagation());
     }
     for (const type of ['keydown', 'keyup', 'keypress']) {
-      root.addEventListener(type, event => { if (event.key !== 'Escape') event.stopPropagation(); });
-    }
-    let redKey = null;
-    function update(current, selectedIndex, message = '') {
-      const selected = current.find(b => b.i === selectedIndex);
-      const reds = current.filter(b => b.n === 1 && b.active);
-      buttons.forEach((button, n) => {
-        button.setAttribute('aria-pressed', String(selected?.n === n));
-        button.querySelector('.pe-ball-state').textContent = n === 1 ? `已放 ${reds.length} / 15` : current.some(b => b.n === n && b.active) ? '已放 · 可移动' : '待放';
+      root.addEventListener(type, event => {
+        if (!['w', 'ArrowUp', 'Escape'].includes(event.key.length === 1 ? event.key.toLowerCase() : event.key)) event.stopPropagation();
       });
-      const key = reds.map(b => b.i).join(',');
-      if (redKey !== key) {
-        redKey = key;
-        const option = document.createElement('option');
-        option.value = '';
-        option.textContent = reds.length === 15 ? '红球已全部放置' : '＋ 新增一颗红球';
-        option.disabled = reds.length === 15;
-        redSelect.replaceChildren(option);
-        for (const ball of reds) {
-          const entry = document.createElement('option');
-          entry.value = ball.i;
-          entry.textContent = `移动红球 ${ball.i}`;
-          redSelect.append(entry);
-        }
-      }
-      redSelect.value = selected?.n === 1 && selected.active ? String(selected.i) : '';
-      $('.pe-remove').disabled = !selected || !selected.active || selected.n === 0;
+    }
+    let position = null, drag = null;
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(POSITION_KEY));
+      if (Number.isFinite(saved?.x) && Number.isFinite(saved?.y)) position = saved;
+    } catch (_) {}
+    function savePosition() {
+      try {
+        if (position) window.localStorage.setItem(POSITION_KEY, JSON.stringify(position));
+        else window.localStorage.removeItem(POSITION_KEY);
+      } catch (_) {}
+    }
+    function place(x, y) {
+      const rect = root.getBoundingClientRect();
+      if (root.hidden || !rect.width || !rect.height) return;
+      position = {
+        x: Math.max(8, Math.min(x, window.innerWidth - rect.width - 8)),
+        y: Math.max(8, Math.min(y, window.innerHeight - rect.height - 8))
+      };
+      root.style.left = `${position.x}px`;
+      root.style.top = `${position.y}px`;
+      root.style.right = 'auto';
+    }
+    function clamp() {
+      const rect = root.getBoundingClientRect();
+      place(position ? position.x : rect.left, position ? position.y : rect.top);
+    }
+    function finishDrag() {
+      if (!drag) return;
+      const pointerId = drag.pointerId;
+      drag = null;
+      if (heading.hasPointerCapture(pointerId)) heading.releasePointerCapture(pointerId);
+      savePosition();
+    }
+    heading.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const rect = root.getBoundingClientRect();
+      drag = { pointerId: event.pointerId, x: event.clientX - rect.left, y: event.clientY - rect.top };
+      heading.setPointerCapture(event.pointerId);
+    });
+    heading.addEventListener('pointermove', event => {
+      if (drag?.pointerId === event.pointerId) place(event.clientX - drag.x, event.clientY - drag.y);
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) heading.addEventListener(type, finishDrag);
+    heading.addEventListener('dblclick', () => {
+      position = null;
+      root.style.left = '';
+      root.style.top = '';
+      root.style.right = '';
+      savePosition();
+      clamp();
+    });
+    window.addEventListener('resize', clamp);
+    function update(current, selectedIndex, editing = false) {
+      const selected = current.find(b => b.i === selectedIndex);
+      buttons.forEach((button, n) => button.setAttribute('aria-pressed', String(selected?.n === n)));
+      buttons[1].title = `红球 · 已放 ${current.filter(b => b.n === 1 && b.active).length} / 15`;
       $('.pe-clear').disabled = !current.some(b => b.n !== 0 && b.active);
-      $('.pe-status').textContent = message || (selected ? `正在摆放${NAMES[selected.n]}，移动鼠标选择落点。` : '选择球盘中的球开始摆放。');
+      $('.pe-cancel').disabled = !editing;
+    }
+    function setVisible(visible) {
+      if (!visible) finishDrag();
+      root.hidden = !visible;
+      if (visible) clamp();
     }
     container.append(root);
     update(balls, null);
-    root.scrollTop=0;
-    return { update, destroy() { root.remove(); } };
+    clamp();
+    return {
+      update,
+      setVisible,
+      destroy() {
+        finishDrag();
+        window.removeEventListener('resize', clamp);
+        root.remove();
+      }
+    };
   }
   return { placementError, createEditor };
 })();
 
 (() => {
   'use strict';
-  const VERSION = "0.2.1";
+  const VERSION = "0.2.2";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）']];
@@ -643,7 +677,6 @@ const PCOLPractice = (() => {
   }
   function statusLine(s) {
     const on = s.g._model._gContext.ballOn;
-    if (s.practice === 'custom') return `自由练习 · 台上 ${balls(s.g).filter(b => b.active && b.n > 0).length} 颗目标球${s.lastResult?.pottedCount != null ? ` · 本杆进 ${s.lastResult.pottedCount} 球` : ''}`;
     if (s.conceded) return '本局已认输';
     if (s.pending) return `犯规 ${-s.pending.result.score} 分 · 等待选择`;
     if (s.freeBallNominee != null) return `自由球：${COLOURS[s.g._simulator.getBallAtIndex(s.freeBallNominee).number]}（按${ballOnLabel(on)}计）`;
@@ -666,12 +699,12 @@ const PCOLPractice = (() => {
     s.host.style.bottom = 'auto';
   }
   function enablePanelDrag(s) {
-    const handle = s.shadow.querySelector('.drag');
     let drag = null;
     try {
       const stored = JSON.parse(window.localStorage.getItem(PANEL_POSITION_KEY));
       if (Number.isFinite(stored?.x) && Number.isFinite(stored?.y)) s.panelPosition = stored;
     } catch (_) { /* Storage can be disabled; dragging still works this session. */ }
+    for(const handle of [s.shadow.querySelector('.drag'),s.shadow.querySelector('.status')]){
     handle.onpointerdown = e => {
       if (e.button !== 0 || s.modal) return;
       e.preventDefault();
@@ -697,6 +730,7 @@ const PCOLPractice = (() => {
       Object.assign(s.host.style,{left:'16px',top:'auto',bottom:'14px'});
       try { window.localStorage.removeItem(PANEL_POSITION_KEY); } catch (_) {}
     };
+    }
     const resize = () => { if (s.panelPosition) positionPanel(s,s.panelPosition.x,s.panelPosition.y); };
     window.addEventListener('resize',resize);
     patches.push(() => window.removeEventListener('resize',resize));
@@ -710,13 +744,13 @@ const PCOLPractice = (() => {
     shadow.innerHTML = `<style>
       *{box-sizing:border-box}button{font:inherit;cursor:pointer;border:1px solid #ab8544;border-radius:5px;background:#28241b;color:#fff;padding:8px 12px}button:hover{background:#65512e}button:focus-visible{outline:2px solid #f5c368;outline-offset:2px}button.primary{background:#aa782d;color:#fff}button:disabled{opacity:.45;cursor:default}.bar{display:flex;gap:9px;align-items:center;padding:7px 10px;background:#171610e8;border:1px solid #88734c;border-radius:6px}.bar button{padding:3px 7px}.veil{position:fixed;inset:0;display:grid;place-items:center;background:#0009}.panel{width:min(540px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:#171914;border:1px solid #b69758;border-radius:10px;padding:24px;box-shadow:0 18px 60px #0008}.panel h2{font-size:21px;margin:0 0 12px}.panel p{margin:9px 0 18px;color:#dedbcd}.choices{display:flex;gap:9px;flex-wrap:wrap}.note{font-size:12px;color:#b8baa9;margin-top:14px}
       [hidden]{display:none!important}.bar{max-width:calc(100vw - 16px);flex-wrap:wrap}.drag{cursor:grab;touch-action:none;user-select:none;padding:0 4px;color:#e7c986;font-size:18px}.drag:active{cursor:grabbing}
-    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="edit" hidden>摆球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="modal"></div>`;
+      .bar[data-practice="true"]{background:rgba(248,250,253,.92);color:#1d1d1f;border:1px solid #ffffffcf;border-radius:16px;padding:9px 11px 9px 15px;gap:14px;box-shadow:0 8px 28px #0002,inset 0 1px #fff;backdrop-filter:blur(22px) saturate(110%);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}.bar[data-practice="true"] .status{cursor:grab;touch-action:none;user-select:none;font-weight:500}.bar[data-practice="true"] button{background:#007aff0c;color:#007aff;border:1px solid #007aff1a;border-radius:9px;padding:5px 10px}.bar[data-practice="true"] button:hover{background:#007aff1c}.bar[data-practice="true"] button:disabled{color:#8e8e93;background:#8e8e930b;border-color:transparent;opacity:1}
+    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status" title="拖动浮窗；双击恢复位置"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="practice-controls"></div><div class="modal"></div>`;
     document.documentElement.appendChild(host);
     s.host = host; s.shadow = shadow;
     enablePanelDrag(s);
     shadow.querySelector('.hotseat').onclick = () => startHotseat(s);
     shadow.querySelector('.practice').onclick = () => choosePractice(s);
-    shadow.querySelector('.edit').onclick = () => openPracticeEditor(s);
     shadow.querySelector('.retry').onclick = () => retryPractice(s);
     shadow.querySelector('.choose').onclick = () => chooseBall(s);
     shadow.querySelector('.concede').onclick = () => showConcession(s);
@@ -728,21 +762,24 @@ const PCOLPractice = (() => {
     if (!s.host) mount(s);
     const live = s.app._currentController === s.g && s.g._model._gState !== 1;
     const home = s.app._currentController === s.app._controllers.home && s.app._controllers.home?.state === 3;
+    const custom=s.practice==='custom',replay=live && s.g._activeSubControl?.name==='replay';
+    const controlsVisible=live && custom && !replay && s.g._model._gState===4 && !s.shot && !s.practiceControlsHidden && !s.modal;
     s.host.style.display = live || home ? 'block' : 'none';
-    s.shadow.querySelector('.bar').hidden = live && s.g._activeSubControl?.name === 'replay';
+    s.shadow.querySelector('.bar').hidden = replay || (live && custom && !controlsVisible);
+    s.shadow.querySelector('.bar').setAttribute('data-practice',String(live && custom));
+    s.shadow.querySelector('.drag').hidden=live && custom;
     s.shadow.querySelector('.hotseat').hidden = !home;
     s.shadow.querySelector('.practice').hidden = !home;
-    s.shadow.querySelector('.edit').hidden = !(live && s.practice === 'custom');
-    s.shadow.querySelector('.edit').disabled = !practiceReady(s) || s.modal || Boolean(s.placement);
     const retry = s.shadow.querySelector('.retry');
     retry.hidden = !(live && s.practice);
     retry.disabled = !canRetryPractice(s) || s.modal;
     retry.title = '恢复上一杆前的球位、分数和单杆分';
     const touching=live?touchingNotice(s):'';
-    s.shadow.querySelector('.status').textContent = home ? 'PCOL · 规则与练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
+    s.shadow.querySelector('.status').textContent = home ? 'PCOL · 规则与练习' : custom ? '自由练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
     const eligible = live && !s.pending && s.g._model._gState === 4 && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && (s.freeBallAvailable || s.freeBallReview || s.g._model._gContext.ballOn === 252);
     s.shadow.querySelector('.choose').hidden = !eligible;
     s.shadow.querySelector('.concede').hidden = !(live && concessionInfo(s).available && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && !s.modal);
+    if(s.editor){s.editor.setVisible(controlsVisible);if(controlsVisible)s.editor.update(editableBalls(s),s.placement?.selectedIndex ?? null,Boolean(s.placement));}
     if ((live || home) && s.panelPosition && !s.shadow.querySelector('.bar').hidden) positionPanel(s,s.panelPosition.x,s.panelPosition.y);
   }
   function closeModal(s) {
@@ -870,26 +907,37 @@ const PCOLPractice = (() => {
     sim.reset(false, true);
     sim._world.accumulator = 0;
   }
-  function openPracticeEditor(s) {
-    if (s.practice !== 'custom' || !practiceReady(s) || s.modal || s.placement) return false;
-    s.celebration.clear();
-    s.placement={before:takeSnapshot(s),bounds:practiceBounds(s),selectedIndex:0,changed:false};
+  function ensurePracticePanel(s) {
+    if(s.editor)return;
     const changeLayout=layout=>{
       if(!practiceReady(s))return;
+      if(!s.placement)openPracticeEditor(s);
       placePracticeLayout(s,layout);s.placement.changed=true;syncResponse(s);refreshPlacement(s);
     };
-    s.editor=PCOLPractice.createEditor({document,container:s.shadow.querySelector('.modal'),balls:editableBalls(s),
-      onSelect:n=>selectPlacementBall(s,n),
-      onSelectRed:i=>selectPlacementBall(s,1,i),
-      onRemove:()=>{const layout=editableBalls(s),b=layout.find(b=>b.i===s.placement.selectedIndex);if(b.n===0)return;b.active=false;changeLayout(layout);},
+    s.editor=PCOLPractice.createEditor({document,window,container:s.shadow.querySelector('.practice-controls'),balls:editableBalls(s),
+      onSelect:n=>{if(!s.placement&&!openPracticeEditor(s))return;selectPlacementBall(s,n);},
       onClear:()=>changeLayout(editableBalls(s).map(b=>({...b,active:b.n===0}))),
       onStandard:()=>changeLayout(editableBalls(s).map(b=>({...b,...b.spot,active:true}))),
-      onDone:()=>finishPracticeEditor(s,true),onCancel:()=>finishPracticeEditor(s,false)
+      onCancel:()=>finishPracticeEditor(s,false)
     });
-    const escape=e=>{if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();finishPracticeEditor(s,false);}};
-    s.g._gView.canvas.addEventListener('keydown',escape,true);
-    s.shadow.addEventListener('keydown',escape,true);
-    s.placement.removeEvents=()=>{s.g._gView.canvas.removeEventListener('keydown',escape,true);s.shadow.removeEventListener('keydown',escape,true);};
+    const shortcut=e=>{
+      if((e.key==='w'||e.key==='W'||e.key==='ArrowUp')&&practiceReady(s)&&!s.modal){
+        e.preventDefault();e.stopImmediatePropagation();s.g._fpc.gotoState1();s.g._gView.canvas.focus();
+      }else if(e.key==='Escape'&&s.placement){e.preventDefault();e.stopImmediatePropagation();finishPracticeEditor(s,false);}
+    };
+    const canvas=s.g._gView.canvas;
+    canvas.addEventListener('keydown',shortcut,true);s.shadow.addEventListener('keydown',shortcut,true);
+    s.removePracticeKeys=()=>{canvas.removeEventListener('keydown',shortcut,true);s.shadow.removeEventListener('keydown',shortcut,true);};
+  }
+  function destroyPracticePanel(s) {
+    if(!s.editor)return;
+    s.removePracticeKeys();s.editor.destroy();s.editor=null;
+  }
+  function openPracticeEditor(s) {
+    if (s.practice !== 'custom' || !practiceReady(s) || s.modal || s.placement) return false;
+    ensurePracticePanel(s);
+    s.celebration.clear();s.practiceControlsHidden=false;
+    s.placement={before:takeSnapshot(s),bounds:practiceBounds(s),selectedIndex:0,changed:false};
     const hand=s.g._subControl.inHand;
     hand._closeTip();hand._tipPopped=true;hand._firstLookToSet=true;
     s.g._activateSubControl('inHand');
@@ -908,7 +956,7 @@ const PCOLPractice = (() => {
     const b=s.g._simulator.getBallAtIndex(s.placement.selectedIndex),hand=s.g._subControl.inHand,view=s.g._gView;
     if(b.active)view.showRespotIcons(b.position);else view._respotIcon0.alpha=0;
     hand._needsUpdate=true;hand._isValidSpot=false;
-    s.editor.update(editableBalls(s),b.index);
+    s.editor.update(editableBalls(s),b.index,true);
     view.requireRender();
   }
   function placeSelectedBall(s,position) {
@@ -927,7 +975,7 @@ const PCOLPractice = (() => {
   function finishPracticeEditor(s,keep) {
     const edit=s.placement;
     if(!edit)return false;
-    edit.removeEvents();s.placement=null;s.editor.destroy();s.editor=null;
+    s.placement=null;s.practiceControlsHidden=keep;
     if(!keep){restoreSnapshot(s,edit.before);return true;}
     if(edit.changed){
       s.practiceLayout=editableBalls(s);s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;
@@ -973,6 +1021,7 @@ const PCOLPractice = (() => {
   function recordCompletedStroke(s, shot, result) {
     s.lastTrace=shot.trace;s.lastContacts=shot.contacts;s.lastBefore=shot.before;s.lastResult=result;
     if (s.practice) s.practiceBefore=shot.before;
+    if (s.practice==='custom') s.practiceControlsHidden=false;
     s.log.push({kind:'stroke',round:s.g._model._gContext.nRounds,offender:shot.before.context.playerIndex,result:clone(result),score:scores(s.g._model),traceSamples:shot.trace.length});
     if(s.log.length>100)s.log.shift();
     s.shot=null;resetTurn(s);
@@ -1206,7 +1255,7 @@ const PCOLPractice = (() => {
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
-    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;
+    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;
     API.app = app;
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
@@ -1221,7 +1270,16 @@ const PCOLPractice = (() => {
       if(s.placement){g._gView.syncBalls(sim.getBalls(),sim.evolution);g._gView.requireRender();return;}
       return original.apply(this,args);
     });
-    wrap(g,'exit',original=>function(...args){if(s.placement)finishPracticeEditor(s,false);return original.apply(this,args);});
+    wrap(g,'exit',original=>function(...args){if(s.placement)finishPracticeEditor(s,false);destroyPracticePanel(s);return original.apply(this,args);});
+    wrap(g._fpc,'gotoState1',original=>function(...args){
+      if(s.practice==='custom'){if(s.placement)finishPracticeEditor(s,true);s.practiceControlsHidden=true;render(s);}
+      return original.apply(this,args);
+    });
+    wrap(g._fpc,'gotoState0',original=>function(...args){
+      const r=original.apply(this,args);
+      if(s.practice==='custom'&&m._gState===4&&!s.shot&&!s.placement){s.practiceControlsHidden=false;render(s);}
+      return r;
+    });
     const hand=g._subControl.inHand;
     wrap(hand,'_showTip',original=>function(...args){if(s.placement){this._tipPopped=true;return;}return original.apply(this,args);});
     wrap(hand,'_onActvate',original=>function(...args){const r=original.apply(this,args);if(s.placement)this._firstLookToSet=true;return r;});
@@ -1238,7 +1296,7 @@ const PCOLPractice = (() => {
     wrap(g,'updateActing',original=>function(...args){
       const r=original.apply(this,args);
       // Wait until the stock first-play controls dialog has been closed.
-      if(s.openEditorOnReady && practiceReady(s)){s.openEditorOnReady=false;openPracticeEditor(s);}
+      if(s.openEditorOnReady && practiceReady(s)){s.openEditorOnReady=false;ensurePracticePanel(s);render(s);}
       return r;
     });
     const home=app._controllers.home;
@@ -1249,6 +1307,7 @@ const PCOLPractice = (() => {
     wrap(m, 'asyncLaunch', original => function (ready) {
       s.hotseat = s.requestedHotseat;
       s.requestedHotseat = false;
+      destroyPracticePanel(s);s.practiceControlsHidden=false;
       s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;
       return original.call(this, payload => {
         if (s.hotseat) {
@@ -1343,6 +1402,7 @@ const PCOLPractice = (() => {
     });
     wrap(m, '_onResetResponse', original => function (...args) {
       if(s.placement)finishPracticeEditor(s,false);
+      s.practiceControlsHidden=false;
       s.celebration.clear();
       s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;
       s.pending = null; s.shot = null; s.conceded = null; s.concessionTurn = null; resetTurn(s); if (s.modal) closeModal(s);
@@ -1370,7 +1430,7 @@ const PCOLPractice = (() => {
     chooseBall: () => active && chooseBall(active),
     resolveFoul: action => active && resolveFoul(active, action),
     concede: () => active && concedeFrame(active),
-    uninstall: () => { if(active?.placement)finishPracticeEditor(active,false);if (active?.modal) closeModal(active); active?.celebration.destroy(); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
+    uninstall: () => { if(active?.placement)finishPracticeEditor(active,false);if(active)destroyPracticePanel(active);if (active?.modal) closeModal(active); active?.celebration.destroy(); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
   };
   function instrument(chunk) {
     const modules = chunk?.[1], original = modules?.[10];

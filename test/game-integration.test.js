@@ -8,7 +8,7 @@ const {version}=require('../package.json');
 const Model=vm.runInNewContext('('+modelSource+')',{f:EventEmitter,Te:{a:{NO_GAME:1,PENDING:2,READY:4,SIMULATING:8,JUDGING:16,ERROR:32}},o:{a:{makeGContext:()=>({ballOn:2,inHand:0,nRounds:0,playerIndex:1}),makeRefResult:()=>({score:0,foulCode:0})}}});
 class Element{
   constructor(tag='div'){this.tag=tag;this.children=[];this.style={};this.hidden=false;}
-  set innerHTML(value){this.children=[];for(const name of ['bar','drag','status','hotseat','practice','edit','retry','choose','concede','modal']){const e=new Element(name==='status'?'span':['bar','modal'].includes(name)?'div':'button');e.className=name;this.append(e);}}
+  set innerHTML(value){this.children=[];for(const name of ['bar','drag','status','hotseat','practice','retry','choose','concede','practice-controls','modal']){const e=new Element(name==='status'?'span':['bar','modal'].includes(name)?'div':'button');e.className=name;this.append(e);}}
   append(...es){this.children.push(...es);}appendChild(e){this.append(e);return e;}replaceChildren(...es){this.children=es;}
   setAttribute(name,value){this[name]=value;}addEventListener(){}removeEventListener(){}focus(){}remove(){this.removed=true;}
   attachShadow(){return this.shadow=new Element();}
@@ -26,7 +26,7 @@ function setup(score=55){
   model._locRef={_liveRespot(){},_liveRespotCueBall(){},resetGContext(ctx){ctx.ballOn=2;ctx.inHand=0;}};
   Object.assign(model._locRef,{_dArea:{_center:{x:-1.04},_radius:.29},intersectionRayValidRegionPlane(origin,dir,out){Object.assign(out,origin);return true;},projectionInSideValidRegion(x){return x<=-1;}});
   let endings=0;model.on('response',()=>{if(model._gContext.ballOn===0)endings++;});
-  const fpc={_gPlayerIndex:0,get gPlayerIndex(){return this._gPlayerIndex;},gotoState0(){},markForceUpdate(){}},g={_model:model,_simulator:sim,_fpc:fpc,_playerCtls:[fpc,{gPlayerIndex:1,deactivate(){},release(){}}],_paused:false,_gView:{canvas:{focus(){}},syncBalls(){}},_movieClip:{erase(){}},_uiLayer:{closeMessage(){}}};
+  const fpc={_gPlayerIndex:0,get gPlayerIndex(){return this._gPlayerIndex;},gotoState0(){this._state=0;},gotoState1(){this._state=1;},markForceUpdate(){}},g={_model:model,_simulator:sim,_fpc:fpc,_playerCtls:[fpc,{gPlayerIndex:1,deactivate(){},release(){}}],_paused:false,_gView:{canvas:{focus(){}},syncBalls(){}},_movieClip:{erase(){}},_uiLayer:{closeMessage(){}}};
   Object.assign(g._gView,{showRespotIcons(){},requireRender(){},_respotIcon0:{alpha:0}});
   Object.assign(g._gView.canvas,{addEventListener(){},removeEventListener(){}});
   g._subControl={inHand:{name:'inHand',_closeTip(){},_showTip(){},_onActvate(){}},gaming:{name:'gaming'}};
@@ -36,8 +36,8 @@ function setup(score=55){
   const window={addEventListener(){},removeEventListener(){}},document={documentElement:new Element(),createElement:tag=>new Element(tag)};
   const integration=fs.readFileSync(require.resolve('../src/integration.js'),'utf8').replaceAll('__PCOL_VERSION__',JSON.stringify(version));
   const celebrations=[];
-  let editorOptions;
-  vm.runInNewContext(integration,{window,document,PCOLCore:core,PCOLPractice:{...practice,createEditor:options=>{editorOptions=options;return{update(){},destroy(){}};}},PCOLCelebration:{create:()=>({show:data=>celebrations.push(data),clear(){},destroy(){}})},console});
+  let editorOptions,paletteVisible=false;
+  vm.runInNewContext(integration,{window,document,PCOLCore:core,PCOLPractice:{...practice,createEditor:options=>{editorOptions=options;return{update(){},setVisible(v){paletteVisible=v;},destroy(){paletteVisible=false;}};}},PCOLCelebration:{create:()=>({show:data=>celebrations.push(data),clear(){},destroy(){}})},console});
   const s=window.PCOLPatch.attach(app,{c:{}}),api=window.PCOLPatch;
   function stroke({player=1,pot=false,miss=false}={}){
     model._gContext.playerIndex=player;if(s.hotseat)model._response(sim);assert.equal(model.reportPlayerStroke(player),true);
@@ -47,7 +47,7 @@ function setup(score=55){
     assert.equal(model.reqRoundResult(sim),model);
   }
   const buttons=()=>{const panel=s.shadow.querySelector('.panel');return panel?.querySelector('.choices')?.children||[];};
-  return {s,api,g,model,sim,players,stroke,buttons,celebrations,editor:()=>editorOptions,endings:()=>endings};
+  return {s,api,g,model,sim,players,stroke,buttons,celebrations,editor:()=>editorOptions,paletteVisible:()=>paletteVisible,endings:()=>endings};
 }
 
 test('3D practice placement moves the selected colour across the table, rejects overlaps and cancels cleanly',()=>{
@@ -65,9 +65,20 @@ test('3D practice placement moves the selected colour across the table, rejects 
 test('3D practice placement commits a new layout and clears prior shot retry statistics',()=>{
   const t=setup(0);t.players.splice(1);t.s.practice='custom';Object.assign(t.model._gContext,{ballOn:65535,playerIndex:0});
   t.players[0].pts=20;t.s.practiceBefore={};t.api.editPractice();t.editor().onSelect(7);
-  t.model.reqRespotCueball({x:1.3,y:.90625,z:.2},t.sim);t.editor().onDone();
+  t.model.reqRespotCueball({x:1.3,y:.90625,z:.2},t.sim);t.g._fpc.gotoState1();
   assert.equal(t.s.placement,null);assert.equal(t.s.practiceBefore,null);assert.equal(t.players[0].pts,0);
   assert.equal(t.s.practiceLayout.find(b=>b.n===7).x,1.3);assert.equal(t.g._activeSubControl.name,'gaming');
+});
+
+test('practice controls hide on aim, return after the stroke, and select a colour without a separate edit button',()=>{
+  const t=setup(0);t.players.splice(1);t.s.practice='custom';Object.assign(t.model._gContext,{ballOn:65535,playerIndex:0});
+  t.api.editPractice();assert.equal(t.paletteVisible(),true);
+  t.g._fpc.gotoState1();assert.equal(t.paletteVisible(),false);assert.equal(t.s.shadow.querySelector('.bar').hidden,true);assert.equal(t.s.placement,null);
+  t.stroke({player:0,pot:true});assert.equal(t.paletteVisible(),true);assert.equal(t.s.shadow.querySelector('.bar').hidden,false);assert.equal(t.s.shadow.querySelector('.status').textContent,'自由练习');
+  assert.equal(t.s.placement,null);assert.equal(t.api.getStatus().canRetryPractice,true);
+  const retry=t.s.practiceBefore;t.editor().onSelect(7);assert.equal(t.s.placement.selectedIndex,7);assert.equal(t.s.practiceBefore,retry);
+  t.editor().onCancel();assert.equal(t.paletteVisible(),true);assert.equal(t.s.practiceBefore,retry);assert.equal(t.model._gContext.nRounds,1);
+  t.api.uninstall();assert.equal(t.paletteVisible(),false);
 });
 
 test('a century is celebrated on the scoring stroke once, never on response or foul',()=>{
