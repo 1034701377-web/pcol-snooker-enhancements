@@ -151,7 +151,7 @@
     s.shadow.querySelector('.hotseat').hidden = !home;
     s.shadow.querySelector('.practice').hidden = !home;
     s.shadow.querySelector('.edit').hidden = !(live && s.practice === 'custom');
-    s.shadow.querySelector('.edit').disabled = !practiceReady(s) || s.modal;
+    s.shadow.querySelector('.edit').disabled = !practiceReady(s) || s.modal || Boolean(s.placement);
     const retry = s.shadow.querySelector('.retry');
     retry.hidden = !(live && s.practice);
     retry.disabled = !canRetryPractice(s) || s.modal;
@@ -164,7 +164,6 @@
     if ((live || home) && s.panelPosition && !s.shadow.querySelector('.bar').hidden) positionPanel(s,s.panelPosition.x,s.panelPosition.y);
   }
   function closeModal(s) {
-    s.editor?.destroy(); s.editor = null;
     s.shadow?.querySelector('.modal').replaceChildren();
     if (s.modal) s.g._paused = s.pausedBeforeModal;
     s.modal = false;
@@ -269,7 +268,7 @@
   function practiceReady(s) {
     return Boolean(s.practice && s.app._currentController === s.g && s.g._model._gState === 4 && !s.shot && !s.g._uiLayer.isBlocked && s.g._activeSubControl?.name !== 'replay');
   }
-  function canRetryPractice(s) { return practiceReady(s) && Boolean(s.practiceBefore); }
+  function canRetryPractice(s) { return practiceReady(s) && !s.placement && Boolean(s.practiceBefore); }
   function practiceBounds(s) {
     const sim = s.g._simulator, vertices = sim.ground.edges.map(e => e.va), sides = sim.sidePolyGroups.polys;
     // Use the inward-facing straight cushions, ignoring the back of the pockets.
@@ -290,33 +289,88 @@
     sim._world.accumulator = 0;
   }
   function openPracticeEditor(s) {
-    if (s.practice !== 'custom' || !practiceReady(s) || s.modal) return false;
+    if (s.practice !== 'custom' || !practiceReady(s) || s.modal || s.placement) return false;
     s.celebration.clear();
-    s.pausedBeforeModal = s.g._paused; s.modal = true; s.g._paused = true;
-    s.editor = PCOLPractice.createEditor({document,window,container:s.shadow.querySelector('.modal'),balls:editableBalls(s),bounds:practiceBounds(s),onCancel:()=>closeModal(s),onApply:layout=>applyPracticeLayout(s,layout)});
+    s.placement={before:takeSnapshot(s),bounds:practiceBounds(s),selectedIndex:0,changed:false};
+    const changeLayout=layout=>{
+      if(!practiceReady(s))return;
+      placePracticeLayout(s,layout);s.placement.changed=true;syncResponse(s);refreshPlacement(s);
+    };
+    s.editor=PCOLPractice.createEditor({document,container:s.shadow.querySelector('.modal'),balls:editableBalls(s),
+      onSelect:n=>selectPlacementBall(s,n),
+      onSelectRed:i=>selectPlacementBall(s,1,i),
+      onRemove:()=>{const layout=editableBalls(s),b=layout.find(b=>b.i===s.placement.selectedIndex);if(b.n===0)return;b.active=false;changeLayout(layout);},
+      onClear:()=>changeLayout(editableBalls(s).map(b=>({...b,active:b.n===0}))),
+      onStandard:()=>changeLayout(editableBalls(s).map(b=>({...b,...b.spot,active:true}))),
+      onDone:()=>finishPracticeEditor(s,true),onCancel:()=>finishPracticeEditor(s,false)
+    });
+    const escape=e=>{if(e.key==='Escape'){e.preventDefault();e.stopImmediatePropagation();finishPracticeEditor(s,false);}};
+    s.g._gView.canvas.addEventListener('keydown',escape,true);
+    s.shadow.addEventListener('keydown',escape,true);
+    s.placement.removeEvents=()=>{s.g._gView.canvas.removeEventListener('keydown',escape,true);s.shadow.removeEventListener('keydown',escape,true);};
+    const hand=s.g._subControl.inHand;
+    hand._closeTip();hand._tipPopped=true;hand._firstLookToSet=true;
+    s.g._activateSubControl('inHand');
+    selectPlacementBall(s,1);
     render(s);
     return true;
   }
-  function applyPracticeLayout(s, layout) {
-    if (s.practice !== 'custom' || !practiceReady(s)) return false;
-    if (PCOLPractice.validateLayout(layout, practiceBounds(s))) return false;
-    closeModal(s);
-    s.practiceLayout = clone(layout);
-    s.practiceBefore = null; s.lastResult = null; s.lastBefore = null;
-    resetTurn(s);
-    for (const p of s.g._model._players) p.clearScores();
-    Object.assign(s.g._model._gContext,{playerIndex:0,nRounds:0,ballOn:65535,inHand:1});
-    placePracticeLayout(s,layout);
-    s.g._movieClip.erase();
-    s.g._fpc.gotoState0(true);
+  function selectPlacementBall(s,number,index=null) {
+    const bs=balls(s.g);
+    const b=number===1?(index==null?bs.find(b=>b.n===1&&!b.active)||bs.find(b=>b.n===1):bs.find(b=>b.i===index)):bs.find(b=>b.n===number);
+    s.placement.selectedIndex=b.i;
+    refreshPlacement(s);
+    s.g._gView.canvas.focus();
+  }
+  function refreshPlacement(s) {
+    const b=s.g._simulator.getBallAtIndex(s.placement.selectedIndex),hand=s.g._subControl.inHand,view=s.g._gView;
+    if(b.active)view.showRespotIcons(b.position);else view._respotIcon0.alpha=0;
+    hand._needsUpdate=true;hand._isValidSpot=false;
+    s.editor.update(editableBalls(s),b.index);
+    view.requireRender();
+  }
+  function placeSelectedBall(s,position) {
+    if(!practiceReady(s))return false;
+    const bs=balls(s.g),b=bs.find(b=>b.i===s.placement.selectedIndex),candidate={...b,x:position.x,z:position.z};
+    if(PCOLPractice.placementError(bs,candidate,s.placement.bounds))return false;
+    const sim=s.g._simulator;
+    sim.respotIndexXYZ(b.i,position.x,sim.spotY,position.z);
+    sim.reset(false,true);
+    s.placement.changed=true;
+    syncResponse(s);
+    // Continue taking reds from the tray until all fifteen are on the table.
+    if(b.n===1&&!b.active&&sim.getBalls().some(b=>b.number===1&&!b.active))selectPlacementBall(s,1);else refreshPlacement(s);
+    return true;
+  }
+  function finishPracticeEditor(s,keep) {
+    const edit=s.placement;
+    if(!edit)return false;
+    edit.removeEvents();s.placement=null;s.editor.destroy();s.editor=null;
+    if(!keep){restoreSnapshot(s,edit.before);return true;}
+    if(edit.changed){
+      s.practiceLayout=editableBalls(s);s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;
+      resetTurn(s);
+      for(const p of s.g._model._players)p.clearScores();
+      Object.assign(s.g._model._gContext,{playerIndex:0,nRounds:0,ballOn:65535,inHand:1});
+      Object.assign(s.g._model._refResult,{score:0,foulCode:0});
+      s.g._movieClip.erase();
+    }
+    s.g._gView.canvas.focus();
     syncResponse(s);
     return true;
   }
   function retryPractice(s) {
     if (!canRetryPractice(s)) return false;
-    const before = s.practiceBefore, g = s.g, m = g._model, sim = g._simulator;
+    const before = s.practiceBefore;
     closeModal(s);
     s.celebration.clear(); s.practiceBefore = null; s.lastResult = null;
+    s.g._movieClip.erase();
+    s.log.push({kind:'practice-retry',round:before.context.nRounds});
+    restoreSnapshot(s,before);
+    return true;
+  }
+  function restoreSnapshot(s,before) {
+    const g=s.g,m=g._model,sim=g._simulator;
     resetTurn(s);
     sim._world.restore(before.serial);
     sim._world.accumulator = 0;
@@ -330,12 +384,9 @@
       target.pts=p.pts;target.penalty=p.penalty;target.brk=p.brk;target._maxBrk=p.maxbrk;target.shootingCount=p.shootingCount;target.scoreCount=p.scoreCount;
     });
     s.nominatedColour=before.nominatedColour;s.nominationSource=before.nominationSource;s.freeBallNominee=before.freeBallNominee;
-    g._movieClip.erase();
     g._fpc.gotoState0(true);g._fpc.markForceUpdate();
     g._gView.syncBalls(sim.getBalls(),sim.evolution);
-    s.log.push({kind:'practice-retry',round:m._gContext.nRounds});
     syncResponse(s);
-    return true;
   }
   function recordCompletedStroke(s, shot, result) {
     s.lastTrace=shot.trace;s.lastContacts=shot.contacts;s.lastBefore=shot.before;s.lastResult=result;
@@ -573,11 +624,35 @@
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
-    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;
+    s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;
     API.app = app;
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
-    wrap(g, '_activateSubControl', original => function (...args) { const r = original.apply(this,args); if (args[0] === 'replay') s.celebration.clear(); render(s); return r; });
+    wrap(g, '_activateSubControl', original => function (...args) {
+      if(s.placement && args[0]!=='inHand'){
+        finishPracticeEditor(s,args[0]==='gaming');
+        if(args[0]==='gaming')return;
+      }
+      const r = original.apply(this,args); if (args[0] === 'replay') s.celebration.clear(); render(s); return r;
+    });
+    wrap(g,'_onModelResponse',original=>function(...args){
+      if(s.placement){g._gView.syncBalls(sim.getBalls(),sim.evolution);g._gView.requireRender();return;}
+      return original.apply(this,args);
+    });
+    wrap(g,'exit',original=>function(...args){if(s.placement)finishPracticeEditor(s,false);return original.apply(this,args);});
+    const hand=g._subControl.inHand;
+    wrap(hand,'_showTip',original=>function(...args){if(s.placement){this._tipPopped=true;return;}return original.apply(this,args);});
+    wrap(hand,'_onActvate',original=>function(...args){const r=original.apply(this,args);if(s.placement)this._firstLookToSet=true;return r;});
+    wrap(m,'isValidInHandPositionUnderRay',original=>function(origin,direction,simulator,spot){
+      if(!s.placement)return original.call(this,origin,direction,simulator,spot);
+      if(!this._locRef.intersectionRayValidRegionPlane(origin,direction,spot))return false;
+      spot.y=simulator.spotY;
+      const bs=balls(s.g),b=bs.find(b=>b.i===s.placement.selectedIndex);
+      return !PCOLPractice.placementError(bs,{...b,x:spot.x,z:spot.z},s.placement.bounds);
+    });
+    wrap(m,'reqRespotCueball',original=>function(position,simulator){
+      return s.placement?placeSelectedBall(s,position):original.call(this,position,simulator);
+    });
     wrap(g,'updateActing',original=>function(...args){
       const r=original.apply(this,args);
       // Wait until the stock first-play controls dialog has been closed.
@@ -633,7 +708,7 @@
       return original.call(this, key);
     });
     wrap(m, 'reportPlayerStroke', original => function (player) {
-      if (s.modal || s.pending || s.conceded || !this._gContext.ballOn || this._gState !== 4 || this._gContext.playerIndex !== player) return false;
+      if (s.modal || s.placement || s.pending || s.conceded || !this._gContext.ballOn || this._gState !== 4 || this._gContext.playerIndex !== player) return false;
       const controller = g._playerCtls.find(c => c.gPlayerIndex === player);
       if (player === g._fpc.gPlayerIndex) {
         if (s.freeBallReview || (s.freeBallAvailable && s.freeBallNominee == null && !s.freeBallDeclined)) { chooseBall(s); return false; }
@@ -685,6 +760,7 @@
       return finishStroke(s);
     });
     wrap(m, '_onResetResponse', original => function (...args) {
+      if(s.placement)finishPracticeEditor(s,false);
       s.celebration.clear();
       s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;
       s.pending = null; s.shot = null; s.conceded = null; s.concessionTurn = null; resetTurn(s); if (s.modal) closeModal(s);
@@ -712,7 +788,7 @@
     chooseBall: () => active && chooseBall(active),
     resolveFoul: action => active && resolveFoul(active, action),
     concede: () => active && concedeFrame(active),
-    uninstall: () => { if (active?.modal) closeModal(active); active?.celebration.destroy(); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
+    uninstall: () => { if(active?.placement)finishPracticeEditor(active,false);if (active?.modal) closeModal(active); active?.celebration.destroy(); active?.host?.remove(); for (const undo of patches.reverse()) undo(); active = null; delete window.PCOLPatch; }
   };
   function instrument(chunk) {
     const modules = chunk?.[1], original = modules?.[10];
