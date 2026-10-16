@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.13.1
+// @version      0.14.0
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -2358,7 +2358,7 @@ const PCOLSearch=(()=>{
         (!skill||!samples||(sampled.get(c.id)?.length||0)>=samples)&&
         !(sampled.get(c.id)||[]).some(row=>!row.evidence.legal||row.evidence.planCompliance?.intentMet===false);
       const evaluatePolicy=policy?.createEvaluator?.(state,geometry);
-      const evaluate=(candidate,r,expectedNext=true)=>{
+      const evaluate=(candidate,r,expectedNext=false)=>{
         const e=evaluatePolicy?evaluatePolicy(candidate,r):policy?policy.evaluate(state,candidate,r,geometry):geometry.evaluate(state,candidate,r);
         const assessment=brain&&candidate.intent?brain.assess(state,candidate,r,candidate.intent,geometry,brief,{expectedNext}):null;
         return {...e,score:e.score,features:{...e.features,...assessment?.features},assessment};
@@ -2614,6 +2614,11 @@ const PCOLSearch=(()=>{
           i=j;
         }
         const chosen=comparable[0],categoryBest={};
+        // Next-visit plans do not affect this shot's score, coverage or ranking.
+        // Build them only for the returned candidates, after comparison is complete.
+        const finalists=comparable.slice(0,maxResults);
+        if(brain)for(const c of finalists)if(c.intent)
+          c.expectedNext=brain.assess(state,c,outcomes.get(c.id),c.intent,geometry,brief,{expectedNext:true}).expectedNext;
         searchIntent.selected=chosen?.intentSource||null;
         searchIntent.achieved=!!chosen&&intentWorks(chosen);
         for(const c of accepted.slice().sort((a,b)=>b.score-a.score))if(!categoryBest[c.effect])categoryBest[c.effect]={
@@ -2628,7 +2633,7 @@ const PCOLSearch=(()=>{
           activePlan,searchIntent,categoryBest,planCompliance:chosen?.evidence.nominal.planCompliance,
           position:{evolution:before.serial?.evolution,round:rules.nRounds,playerIndex:rules.playerIndex},
           riskCoverage:comparable.map(c=>({id:c.id,samples:c.risk.samples,coverage:c.risk.coverage})),
-          candidates:['stale','cancelled'].includes(status)?[]:comparable.slice(0,maxResults)};
+          candidates:['stale','cancelled'].includes(status)?[]:finalists};
         lastResult.shortlist=lastResult.candidates.map(c=>({id:c.id,kind:c.kind,targetIndex:c.targetIndex,pocketIndex:c.pocketIndex,score:c.score,samples:c.risk?.samples||0,plan:c.plan?.status}));
         // Opt-in complete local evidence. Never expose hidden ranking to the model player.
         if(typeof options.onAudit==='function')options.onAudit(structuredClone({
@@ -3139,9 +3144,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.13.1";
+  const VERSION = "0.14.0";
   const DEVELOPMENT = true;
-  const BUILD_ID = "778e9edd0487";
+  const BUILD_ID = "6a0fc750a7de";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
