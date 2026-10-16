@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.12.0
+// @version      0.12.1
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -2111,7 +2111,7 @@ const PCOLTurnManager = (() => {
         tested++;
         const r=await trial.simulateScenario(scenario,seed.shot,{nominatedColour:seed.nominatedColour,
           maxWallMs:Math.min(2200,Math.max(1,nominalDeadline-performance.now())),trace:false});
-        if(r.stale)throw new Error('Position changed; DeepSeek decision is stale');
+        if(r.stale)throw new Error('Position changed; AI decision is stale');
         if(r.status!=='complete'||!r.adjudication)continue;
         const evaluated=policy.evaluate(state,seed,r,geometry);
         if(r.adjudication.foulCode){fouls++;continue;}
@@ -2127,7 +2127,7 @@ const PCOLTurnManager = (() => {
           if(epoch!==job.epoch||performance.now()>=job.deadline)break;
           let i=0;const shot=skill.perturb(candidate.seed.shot,uncertainty,()=>values[i++]);
           const r=await trial.simulateScenario(scenario,shot,{nominatedColour:candidate.seed.nominatedColour,maxWallMs:Math.min(2000,Math.max(1,job.deadline-performance.now()))});
-          if(r.stale)throw new Error('Position changed; DeepSeek decision is stale');
+          if(r.stale)throw new Error('Position changed; AI decision is stale');
           if(r.status==='complete'&&r.adjudication){
             samples++;
             if(r.adjudication.foulCode)misses++;
@@ -2201,14 +2201,14 @@ const PCOLTurnManager = (() => {
           choices.sort((a,b)=>b.score-a.score);choices=choices.slice(0,6);
         }
         if(epoch!==job.epoch)return;
-        if(!choices.length)throw new Error('No legal turn choices available for DeepSeek');
+        if(!choices.length)throw new Error('No legal turn choices available for AI');
         try {onEvent('turn.search',{kind,elapsedMs:performance.now()-started,choices:choices.map(c=>({id:c.id,action:c.action,score:c.score,features:c.features,outcome:c.outcome,position:c.position,nominee:c.nominee}))});}catch(_){}
-        job.phase='turn-model';changed();
+        job.phase='turn-selection';changed();
         const selected=await choose({kind,state:{ballOn:state.rules.ballOn,playerIndex:state.rules.playerIndex,
           scores:state.scores,remainingPoints:state.remainingPoints,style:state.style},choices,
           timeoutMs:Math.max(1000,90000-(performance.now()-started))});
         if(epoch!==job.epoch)return;
-        if(JSON.stringify(trial.snapshot())!==before)throw new Error('Position changed; DeepSeek decision is stale');
+        if(JSON.stringify(trial.snapshot())!==before)throw new Error('Position changed; AI decision is stale');
         lastResult={kind,choiceId:selected.choice.id,reason:selected.reason,options:choices.map(c=>({id:c.id,score:c.score,features:c.features}))};
         commit(selected.choice,kind,selected.reason,selected.source);
       } catch(error) {if(epoch===job.epoch){failed=true;onError(error);}}
@@ -2553,71 +2553,27 @@ const PCOLSearch=(()=>{
   return {create};
 })();
 
-const PCOLDeepSeek = (() => {
-  const base='http://127.0.0.1:18763';
+const PCOLLocalAI = (() => {
   const failure=(code,message)=>Object.assign(new Error(message),{code});
-  const temporaryFailure=error=>['network','upstream_error','timeout','timeout_or_cancelled','request_failed','busy','invalid_response',
-    'cursor_timeout','cursor_cancelled','cursor_rate_limited','cursor_sdk_error'].includes(error.code)
-    ||error.code==='http'&&error.status>=500;
   const ballNames=['白球','红球','黄球','绿球','棕球','蓝球','粉球','黑球'];
   const describeBall=b=>b&&({id:b.i,name:ballNames[b.n],points:b.n});
-  function semanticState(state) {
-    const mask=state.ballOn,live=(state.balls||[]).filter(b=>b.active!==false),values=[1,2,3,4,5,6,7].filter(n=>mask&(1<<n));
-    const hasScores=state.scores?.length===2&&(state.playerIndex===0||state.playerIndex===1);
-    const myScore=hasScores?state.scores[state.playerIndex]:null,oppScore=hasScores?state.scores[1-state.playerIndex]:null;
-    const pointsBehind=hasScores?oppScore-myScore:null,rem=state.remainingPoints;
-    const scoreSummary=hasScores?`本方${myScore}分，对手${oppScore}分（${pointsBehind>0?`本方落后${pointsBehind}分`:pointsBehind<0?`本方领先${-pointsBehind}分`:'双方平分'}${Number.isFinite(rem)?`，台面剩余${rem}分${pointsBehind>rem?`，本方已被超${pointsBehind-rem}分需做斯诺克`:(-pointsBehind)>rem?`，本方已超分${(-pointsBehind)-rem}分优先消球锁胜`:''}`:''}）`:null;
-    return {...state,rulesView:{phase:mask===2?'红球':mask===252?'红球后任选一颗彩球':mask?'按顺序清彩':'本局结束',
-      target:values.map(n=>ballNames[n]).join('或'),legalTargets:live.filter(b=>values.includes(b.n)).map(describeBall),
-      nominatedColour:ballNames[state.nominatedColour]||null,freeBall:state.freeBall||null,
-      playerToAct:state.playerIndex,pointsBehind,remainingPoints:rem,
-      ...(scoreSummary?{scoreSummary}:{})}};
-  }
-  function localFetch(url,options={}) {
-    if(typeof GM_xmlhttpRequest!=='function')return fetch(url,options);
-    return new Promise((resolve,reject)=>{
-      const signal=options.signal;if(signal?.aborted)return reject(failure('cancelled','Request cancelled'));
-      let request,settled=false;
-      const abort=()=>request?.abort();
-      const finish=(fn,value)=>{if(settled)return;settled=true;signal?.removeEventListener('abort',abort);fn(value);};
-      request=GM_xmlhttpRequest({url,method:options.method||'GET',headers:options.headers||{},data:options.body,anonymous:true,timeout:90000,
-        onload:r=>finish(resolve,{ok:r.status>=200&&r.status<300,status:r.status,json:async()=>JSON.parse(r.responseText)}),
-        onerror:()=>finish(reject,failure('network','Local request failed')),
-        ontimeout:()=>finish(reject,failure('timeout','Local request timed out')),
-        onabort:()=>finish(reject,failure('cancelled','Request cancelled'))});
-      signal?.addEventListener('abort',abort,{once:true});if(signal?.aborted)abort();
-    });
-  }
   const round=value=>{
     if(typeof value==='number')return Number.isFinite(value)?Math.round(value*1000)/1000:null;
     if(Array.isArray(value))return value.map(round);
     if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,round(v)]));
     return value;
   };
-  function hideScores(value,scope='') {
-    if(Array.isArray(value)){
-      const items=value.map(v=>hideScores(v,scope));
-      return items.every(v=>v&&typeof v==='object'&&!Array.isArray(v))?items.sort((a,b)=>String(a.id??a.i??a.targetId??JSON.stringify(a)).localeCompare(String(b.id??b.i??b.targetId??JSON.stringify(b)))):items;
-    }
-    if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).filter(([key])=>key==='scores'||key==='breakScore'||key==='scoreSummary'||key==='score'&&['outcome','lastOutcome'].includes(scope)||!/(score|rank|priority|utility|evaluation|terminalValue)/i.test(key)).map(([key,v])=>[key==='score'&&['outcome','lastOutcome'].includes(scope)?'points':key,hideScores(v,key)]));
-    return value;
-  }
-  function create({getSearch,getTrial,getContext,getSettings=()=>({engine:'local',thinking:false}),getLogContext=()=>null,onEvent=()=>{},fetchImpl=localFetch,onChange=()=>{}}) {
-    let activePlan=null,previousDecision=null,active=null,requestSequence=0,arenaRecoveries=0,state={busy:false,phase:'idle',lastDecision:null};
+  function create({getSearch,getTrial,getContext,onEvent=()=>{},onChange=()=>{}}) {
+    let activePlan=null,active=null,state={busy:false,phase:'idle',lastDecision:null};
     const emit=(kind,data)=>{try{onEvent(kind,round(data));}catch(_){}};
     const update=patch=>{state={...state,...patch};try{onChange({...state});}catch(_){}};
     const fingerprint=()=>JSON.stringify(getTrial().snapshot());
     const compact=list=>[...list].sort((a,b)=>String(a.id).localeCompare(String(b.id))).slice(0,12).map(c=>round({id:c.id,kind:c.kind,label:c.label,targetIndex:c.targetIndex,
       target:describeBall(getContext().balls?.find(b=>b.i===c.targetIndex)),score:c.score,features:c.features,risk:c.risk,plan:c.plan,evidence:c.evidence,outcome:c.outcome,action:c.action}));
     const score=c=>Number.isFinite(c.score)?c.score:0;
-    function eligible(list,force,turn=false) {
-      const sorted=[...list].sort((a,b)=>score(b)-score(a)),top=sorted[0];
-      const signature=c=>JSON.stringify(turn?[c.kind,c.targetIndex,c.action]:[c.kind,c.targetIndex]);
-      const finalists=sorted.filter(c=>force||score(top)-score(c)<=2).slice(0,3);
-      return finalists.length>1&&(force||finalists.some(c=>signature(c)!==signature(top)))?finalists:[];
-    }
     function guard(job,before) {
       if(job.cancelled)throw failure('cancelled','AI decision cancelled');
+      if(job.timedOut||Date.now()>=job.deadline)throw failure('timeout','AI decision deadline exceeded');
       if(fingerprint()!==before)throw failure('stale','Position changed; AI decision is stale');
     }
     function cancellable(promise,signal) {
@@ -2627,177 +2583,75 @@ const PCOLDeepSeek = (() => {
         Promise.resolve(promise).then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
       });
     }
-    async function request(path,options={}) {
-      let response;
-      try{response=await fetchImpl(base+path,options);}catch(error){
-        if(options.signal?.aborted)throw error;
-        throw failure(error.code||'network','Local DeepSeek bridge unavailable (127.0.0.1:18763)');
-      }
-      if(!response.ok){
-        let detail;try{detail=await response.json();}catch(_){}
-        const allowed=['not_configured','busy','upstream_error','response_truncated','invalid_response','invalid_plan','timeout','cancelled','client_disconnected','timeout_or_cancelled','request_failed',
-          'cursor_not_configured','cursor_access_denied','cursor_rate_limited','cursor_configuration_error','cursor_sdk_error','cursor_grok47_unavailable','cursor_invalid_model_parameters','cursor_workspace_not_empty','cursor_unexpected_tool_call','cursor_model_mismatch','cursor_cancelled','cursor_timeout'];
-        const code=allowed.includes(detail?.error)?detail.error:'http';
-        throw Object.assign(failure(code,'DeepSeek request failed ('+code+', HTTP '+response.status+')'),{status:response.status,stage:detail?.stage});
-      }
-      try{return await response.json();}catch(_){throw failure('invalid-response','Invalid DeepSeek bridge response');}
-    }
-    async function arbitrate(path,body,job,settings,requestId) {
-      const remainingMs=job.deadline-Date.now();
-      const timeoutMs=path==='/plan'?Math.min(38000,remainingMs-12000):settings.requireModel&&settings.engine==='cursor'
-        ?remainingMs-500:Math.min(settings.thinking===true?65000:8000,remainingMs);
-      if(timeoutMs<=0)throw failure('timeout','DeepSeek arbitration deadline exceeded');
-      const controller=new AbortController(),abort=()=>controller.abort();let timer;
-      job.controller.signal.addEventListener('abort',abort,{once:true});
-      try {
-        if(job.controller.signal.aborted)abort();
-        return await Promise.race([
-          cancellable(request(path,{method:'POST',headers:{'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'},
-            body:JSON.stringify({...hideScores(body),requestId,provider:settings.engine==='cursor'?'cursor':'deepseek',model:settings.model,
-              thinking:settings.thinking===true,logContext:{...getLogContext(),requestId},timeoutMs}),signal:controller.signal}),controller.signal),
-          new Promise((_,reject)=>{timer=setTimeout(()=>{reject(failure('timeout','DeepSeek arbitration timed out'));controller.abort();},timeoutMs);})
-        ]);
-      }finally{clearTimeout(timer);job.controller.signal.removeEventListener('abort',abort);}
-    }
-    async function select({job,before,settings,options,path,body,list,idField,kind}) {
-      let selected=[...list].sort((a,b)=>score(b)-score(a))[0],source='local',reason='Local search selected the highest-scoring legal option.',reply;
-      const localBestId=selected.id,started=Date.now();let requestId=null;
-      const finalists=eligible(list,options.forceModel===true,path==='/turn');
-      if(['deepseek','cursor'].includes(settings.engine)&&(finalists.length||options.forceModel===true)) {
-        const allowed=finalists.length?finalists:[selected];update({phase:'model'});
-        requestId=(getLogContext()?.frameId||'unrecorded')+'_'+Date.now().toString(36)+'_'+(++requestSequence);
-        job.requestId=requestId;
-        emit('model.request',{kind,requestId,provider:settings.engine,model:settings.model,candidateIds:allowed.map(c=>c.id),localBestId,thinking:settings.thinking===true});
-        try {
-          const requestBody={...body,[path==='/turn'?'choices':'candidates']:compact(allowed)};
-          for(let attempt=0;;attempt++) {
-            try {reply=await arbitrate(path,requestBody,job,settings,requestId);break;}
-            catch(error) {
-              guard(job,before);
-              const remainingMs=job.deadline-Date.now();
-              if(!settings.requireModel||attempt!==0||!temporaryFailure(error)||job.controller.signal.aborted||remainingMs<10000)throw error;
-              const priorRequestId=requestId;
-              requestId=(getLogContext()?.frameId||'unrecorded')+'_'+Date.now().toString(36)+'_'+(++requestSequence);
-              job.requestId=requestId;
-              emit('model.retry',{kind,requestId,priorRequestId,provider:settings.engine,classification:error.code,
-                error:error.message,remainingMs});
-              emit('model.request',{kind,requestId,priorRequestId,provider:settings.engine,model:settings.model,
-                candidateIds:allowed.map(c=>c.id),localBestId,thinking:settings.thinking===true,attempt:2,remainingMs});
-            }
-          }
-          guard(job,before);
-          const picked=allowed.find(c=>c.id===reply?.[idField]);
-          if(!picked)throw failure('invalid-id','DeepSeek returned an unknown or ineligible option ID');
-          arenaRecoveries=0;
-          selected=picked;source=settings.engine;reason=typeof reply.reason==='string'?reply.reason:'';
-        }catch(error){
-          guard(job,before);source='local-fallback';reason='Local selection retained: '+error.message;
-          const classification=job.timedOut?'timeout':error.code||'model-failure';
-          if(settings.requireModel){
-            const recover=settings.allowArenaRecovery===true&&arenaRecoveries===0&&temporaryFailure({...error,code:classification});
-            emit('model.failure',{kind,requestId,provider:settings.engine,classification,error:error.message,status:error.status,stage:error.stage,...(recover?{fallbackId:selected.id}:{})});
-            if(!recover)throw error;
-            arenaRecoveries++;source='local-recovery';
-            emit('model.recovery',{kind,requestId,provider:settings.engine,source,classification,candidateId:selected.id,
-              policy:'arena-one-local-recovery-until-model-success',experimental:true});
-          }
-          update({error:error.message,errorClassification:classification,nonblockingFallback:true});
-          if(!settings.requireModel)emit('model.failure',{kind,requestId,classification,error:error.message,status:error.status,stage:error.stage,fallbackId:selected.id});
-        }
-      }
-      guard(job,before);
-      emit('selection.complete',{kind,requestId,id:selected.id,source,model:reply?.model,reason,score:selected.score,localBestId,
-        changedLocalChoice:selected.id!==localBestId,elapsedMs:Date.now()-started,usage:reply?.usage,recovery:reply?.recovery,
-        candidateIds:(finalists.length?finalists:[selected]).map(c=>c.id)});
-      return {selected,source,reason,model:reply?.model,usage:reply?.usage,shortlist:compact(finalists.length?finalists:[selected])};
-    }
     async function decide(options={}) {
       if(active)throw failure('busy','An AI decision is already running');
       const started=Date.now(),job={controller:new AbortController(),search:getSearch(),deadline:started+90000,cancelled:false};
-      active=job;update({busy:true,phase:'search',lastDecision:null,error:null,errorClassification:null,nonblockingFallback:false});
+      active=job;update({busy:true,phase:'search',lastDecision:null,error:null,errorClassification:null});
       const timer=setTimeout(()=>{job.timedOut=true;job.controller.abort();job.search.cancel();},90000);
       let search;
       try {
-        const before=fingerprint(),context=round(semanticState(getContext())),settings=getSettings()||{};
+        const before=fingerprint(),context=round(getContext());
         const {plan:unusedPlan,...localOptions}=options;
-        const preparation=job.search.preparePlan?await job.search.preparePlan(activePlan,{lastOutcome:context.lastOutcome}):{brief:{},needsReplan:true,reason:'missing-preparation'};
+        const preparation=job.search.preparePlan
+          ?await cancellable(job.search.preparePlan(activePlan,{lastOutcome:context.lastOutcome}),job.controller.signal)
+          :{brief:{},needsReplan:true,reason:'missing-preparation'};
         guard(job,before);
         emit('plan.check',{needsReplan:preparation.needsReplan,reason:preparation.reason,planCompliance:preparation.planCompliance,previousPlan:activePlan});
         const defaultPlan=preparation.brief?.defaultPlan||(preparation.brief?.defaultPrimary&&preparation.brief?.defaultFallback?{primaryIntent:preparation.brief.defaultPrimary,fallbackIntent:preparation.brief.defaultFallback}:null);
-        let plan=preparation.continuedPlan||activePlan,source='local-plan',reason=preparation.reason||'',reply;
-        if(!plan)plan=defaultPlan;
-        if(preparation.needsReplan!==false&&['deepseek','cursor'].includes(settings.engine)) {
-          update({phase:'model'});
-          const requestId=(getLogContext()?.frameId||'unrecorded')+'_'+Date.now().toString(36)+'_'+(++requestSequence);
-          job.requestId=requestId;
-          emit('model.request',{kind:'plan',requestId,provider:settings.engine,reason:preparation.reason,thinking:settings.thinking===true});
-          try {
-            const b=preparation.brief;
-            const compactBrief=b&&typeof b==='object'?{...b,
-              ...(Array.isArray(b.sectors)?{sectors:b.sectors.slice(0,16)}:{}),
-              ...(Array.isArray(b.transitionGraph)?{transitionGraph:b.transitionGraph.slice(0,16).map(({sector,...edge})=>edge)}:{}),
-              ...(Array.isArray(b.shadowZones)?{shadowZones:b.shadowZones.slice(0,8)}:{})}:b;
-            reply=await arbitrate('/plan',{brief:compactBrief,previousPlan:activePlan,planCompliance:preparation.planCompliance,state:context},job,settings,requestId);
-            guard(job,before);
-            if(!reply?.plan?.primaryIntent||!reply?.plan?.fallbackIntent)throw failure('invalid_plan','Model returned no primary and fallback intents');
-            plan=reply.plan;source=settings.engine;reason=plan.reason||'';arenaRecoveries=0;
-          }catch(error) {
-            guard(job,before);
-            const recover=settings.requireModel&&settings.allowArenaRecovery===true&&arenaRecoveries===0&&temporaryFailure(error);
-            emit('model.failure',{kind:'plan',requestId,classification:error.code||'model-failure',error:error.message,status:error.status,stage:error.stage});
-            if(settings.requireModel&&!recover)throw error;
-            if(recover){arenaRecoveries++;emit('model.recovery',{kind:'plan',requestId,classification:error.code,source:'local-recovery',policy:'arena-one-local-recovery-until-model-success',experimental:true});}
-            plan=defaultPlan;source=recover?'local-recovery':'local-fallback';reason=error.message;
-            update({error:error.message,errorClassification:error.code,nonblockingFallback:true});
-          }
-        }else if(preparation.needsReplan===false)source='continued-plan';
-        else plan=defaultPlan;
-        update({phase:'search'});
-        const modelElapsedMs=Date.now()-started;
-        search=await cancellable(job.search.run({...localOptions,fastPlan:preparation.needsReplan===false,budgetMs:Math.max(1,Math.min(Number(options.budgetMs)||65000,65000,job.deadline-Date.now()-500)),plan}),job.controller.signal);
+        const continued=preparation.needsReplan===false;
+        const plan=continued?(preparation.continuedPlan||activePlan||defaultPlan):defaultPlan;
+        const source=continued?'continued-plan':'local-plan',reason=preparation.reason||'';
+        const planningElapsedMs=Date.now()-started;
+        search=await cancellable(job.search.run({...localOptions,fastPlan:continued,
+          budgetMs:Math.max(1,Math.min(Number(options.budgetMs)||65000,65000,job.deadline-Date.now()-500)),plan}),job.controller.signal);
         emit('search.complete',{status:search.status,elapsedMs:search.elapsedMs,totalElapsedMs:Date.now()-started,budgetMs:search.budgetMs,counts:search.counts,stages:search.stages||search.counts,position:search.position,activePlan:search.activePlan,searchIntent:search.searchIntent,planCompliance:search.planCompliance,categoryBest:search.categoryBest,candidates:compact(search.candidates||[])});
         guard(job,before);
         if(['stale','cancelled','needs-ruling'].includes(search.status))throw failure(search.status,'AI search '+search.status);
         if(!search.candidates?.length)throw failure('no-candidates','No legal AI candidates available');
         const candidate=search.selected||search.candidates[0];
-        activePlan=search.activePlan|| (plan?{...plan,actor:context.playerIndex,round:search.position?.round??context.nRounds,
+        activePlan=search.activePlan||(plan?{...plan,actor:context.playerIndex,round:search.position?.round??context.nRounds,
           objective:search.tactical?.objective,expectedNext:candidate.expectedNext||null,lastWasDevelopment:candidate.intent?.task==='develop',
           coverageInsufficient:search.planCompliance?.coverageInsufficient===true}:null);
-        const result={candidate,reason,source,model:reply?.model,usage:reply?.usage,shortlist:compact(search.candidates),activePlan,
+        const result={candidate,reason,source,shortlist:compact(search.candidates),activePlan,
           search:{status:search.status,elapsedMs:search.elapsedMs,counts:search.counts,stages:search.stages,searchIntent:search.searchIntent,planCompliance:search.planCompliance,categoryBest:search.categoryBest}};
-        previousDecision=round({round:search.position?.round,playerIndex:search.position?.playerIndex,
-          candidate:{id:candidate.id,kind:candidate.kind,target:compact([candidate])[0].target},source,reason});
-        emit('selection.complete',{kind:'shot',requestId:job.requestId,id:candidate.id,source,reason,score:candidate.score,
-          elapsedMs:modelElapsedMs,totalElapsedMs:Date.now()-started,model:reply?.model,usage:reply?.usage});
+        emit('selection.complete',{kind:'shot',id:candidate.id,source,reason,score:candidate.score,
+          elapsedMs:planningElapsedMs,totalElapsedMs:Date.now()-started});
         update({phase:'ready',lastDecision:{candidateId:result.candidate.id,source:result.source,reason:result.reason}});return result;
       }catch(error){
         if(job.timedOut&&!job.cancelled)error=failure('timeout','AI decision deadline exceeded');
         if(!search)emit('search.complete',{status:error.code||'error',elapsedMs:Date.now()-started,candidates:[],error:error.message});
         update({phase:error.code==='cancelled'?'idle':'error',error:error.message,errorClassification:error.code||'search-failure'});
-        emit('decision.failure',{requestId:job.requestId,classification:error.code||'search-failure',error:error.message});throw error;
+        emit('decision.failure',{classification:error.code||'search-failure',error:error.message});throw error;
       }finally{clearTimeout(timer);active=null;update({busy:false});}
     }
-    async function chooseTurn({kind,state:turnState,choices,timeoutMs=90000,forceModel=false}) {
+    async function chooseTurn({kind,choices,timeoutMs=90000}) {
       if(active)throw failure('busy','An AI decision is already running');
       if(!Array.isArray(choices)||!choices.length)throw failure('no-candidates','No legal turn choices available');
-      const job={controller:new AbortController(),deadline:Date.now()+Math.max(1,Math.min(90000,Number(timeoutMs)||90000)),cancelled:false};
-      activePlan=null;active=job;update({busy:true,phase:'selection',error:null,errorClassification:null,nonblockingFallback:false,lastDecision:null});
+      const started=Date.now(),job={controller:new AbortController(),deadline:started+Math.max(1,Math.min(90000,Number(timeoutMs)||90000)),cancelled:false};
+      activePlan=null;active=job;update({busy:true,phase:'selection',error:null,errorClassification:null,lastDecision:null});
       try {
-        const before=fingerprint(),context=round(getContext());
-        const result=await select({job,before,settings:getSettings()||{},options:{forceModel},path:'/turn',kind,list:choices,idField:'choiceId',body:{kind,state:round(semanticState({...context,...turnState})),previousDecision,lastOutcome:context?.lastOutcome}});
-        update({phase:'ready',lastDecision:{choiceId:result.selected.id,source:result.source,reason:result.reason}});
-        return {choice:result.selected,reason:result.reason,source:result.source,model:result.model,usage:result.usage};
-      }catch(error){update({phase:error.code==='cancelled'?'idle':'error',error:error.message,errorClassification:error.code||'turn-failure'});emit('decision.failure',{kind,requestId:job.requestId,classification:error.code||'turn-failure',error:error.message});throw error;
+        const before=fingerprint();
+        const choice=[...choices].sort((a,b)=>score(b)-score(a))[0];
+        await Promise.resolve();
+        guard(job,before);
+        const source='local',reason='Local search selected the highest-scoring legal option.';
+        emit('selection.complete',{kind,id:choice.id,source,reason,score:choice.score,localBestId:choice.id,
+          changedLocalChoice:false,elapsedMs:Date.now()-started,candidateIds:choices.map(c=>c.id)});
+        update({phase:'ready',lastDecision:{choiceId:choice.id,source,reason}});
+        return {choice,reason,source};
+      }catch(error){
+        update({phase:error.code==='cancelled'?'idle':'error',error:error.message,errorClassification:error.code||'turn-failure'});
+        emit('decision.failure',{kind,classification:error.code||'turn-failure',error:error.message});throw error;
       }finally{active=null;update({busy:false});}
     }
-    return {decide,chooseTurn,clearPlan:()=>{previousDecision=null;activePlan=null;},getPlan:()=>activePlan&&JSON.parse(JSON.stringify(activePlan)),setPlan:plan=>{activePlan=plan&&JSON.parse(JSON.stringify(plan));},status:()=>request('/status'),cancel:()=>{
+    return {decide,chooseTurn,clearPlan:()=>{activePlan=null;},getPlan:()=>activePlan&&JSON.parse(JSON.stringify(activePlan)),setPlan:plan=>{activePlan=plan&&JSON.parse(JSON.stringify(plan));},cancel:()=>{
       if(!active)return;active.cancelled=true;active.controller.abort();active.search?.cancel();
     },getStatus:()=>({...state,lastDecision:state.lastDecision&&{...state.lastDecision}})};
   }
   return {create};
 })();
 
-const PCOLDeepSeekOpponent = (() => {
+const PCOLLocalOpponent = (() => {
   function create({game,decide,getSnapshot,canThink,cancelDecision = () => {},onError = () => {},onChange = () => {},
     prepareCandidate = candidate => candidate,nominate = () => {}}) {
     let enabled = false, epoch = 0, pending = null, choice = null, expected = null, delivery = null;
@@ -2805,14 +2659,13 @@ const PCOLDeepSeekOpponent = (() => {
     const fingerprint = () => JSON.stringify(getSnapshot());
     const getStatus = () => ({enabled,busy:!!pending,phase,error,reason});
     const changed = () => { try { onChange(getStatus()); } catch (_) {} };
-    // Only retain known application errors. Arbitrary network/JSON errors may
-    // include upstream response bodies or credentials.
+    // Keep unexpected exception details out of the opponent status.
     function messageOf(error,fallback) {
       const message=error?.message;
       const known={stale:'Position changed; AI decision is stale',cancelled:'AI decision cancelled',
         'no-candidates':'No legal AI candidates available','needs-ruling':'Resolve the pending ruling before using AI',timeout:'AI decision deadline exceeded'};
       if(known[error?.code])return known[error.code];
-      return typeof message==='string' && (/^(DeepSeek opponent (position changed|stroke verification failed)|Unsupported DeepSeek shot|Local DeepSeek bridge (unavailable \(127\.0\.0\.1:18763\)|configuration missing or unavailable)|DeepSeek (bridge|plan|turn|choose) request failed \(HTTP \d{3}\)|Invalid DeepSeek (bridge response|tactical plan)|A DeepSeek decision is already running|Position changed; DeepSeek decision is stale|DeepSeek decision (cancelled|timed out)|Resolve the pending ruling before using DeepSeek|No legal candidates available for DeepSeek|DeepSeek returned an unknown candidate ID)$/.test(message)) ? message : fallback;
+      return typeof message==='string' && /^(AI opponent (position changed|stroke verification failed)|Unsupported AI shot|An AI decision is already running)$/.test(message) ? message : fallback;
     }
     function fail(message) {
       choice = null; expected = null; delivery = null; phase = 'error'; error = message; changed();
@@ -2830,7 +2683,7 @@ const PCOLDeepSeekOpponent = (() => {
           !Number.isFinite(shot.power) || !Number.isFinite(vertical) ||
           !Number.isFinite(shot.side||0) || Math.abs(shot.side||0)>1 || Math.abs((shot.elevation || 0) - elevation) > 1e-9 ||
           !Array.isArray(candidate.stroke) || candidate.stroke.length !== 8 || !candidate.stroke.every(Number.isFinite)) {
-        throw new Error('Unsupported DeepSeek shot');
+        throw new Error('Unsupported AI shot');
       }
       return {dx:shot.direction.x,dz:shot.direction.z,powerFactor:shot.power - .3,
         fbSpin:vertical,ballBIndex:candidate.targetIndex};
@@ -2840,7 +2693,7 @@ const PCOLDeepSeekOpponent = (() => {
       if (!canThink() || phase === 'error' || phase === 'delivered') return null;
       if (choice) {
         try {
-          if (fingerprint() !== choice.fingerprint) throw new Error('DeepSeek opponent position changed');
+          if (fingerprint() !== choice.fingerprint) throw new Error('AI opponent position changed');
           // Exactly one execution sample, drawn only after the stale check.
           // Never simulate/retry this draw to select a more favourable error.
           const prepared = prepareCandidate(choice.candidate);
@@ -2850,7 +2703,7 @@ const PCOLDeepSeekOpponent = (() => {
           nominate(prepared);
           choice = null; phase = 'delivered'; ai._currentTaskIndex = -1; changed();
           return routeResult;
-        } catch (error) { fail(messageOf(error,'DeepSeek opponent shot preparation failed')); return null; }
+        } catch (error) { fail(messageOf(error,'AI opponent shot preparation failed')); return null; }
       }
       if (pending) return null;
       const job = {epoch,fingerprint:fingerprint()};
@@ -2860,13 +2713,13 @@ const PCOLDeepSeekOpponent = (() => {
         return decide();
       }).then(result => {
         if (job.epoch !== epoch) return;
-        if (!canThink() || fingerprint() !== job.fingerprint) throw new Error('DeepSeek opponent position changed');
+        if (!canThink() || fingerprint() !== job.fingerprint) throw new Error('AI opponent position changed');
         route(result?.candidate);
         choice = {candidate:result.candidate,fingerprint:job.fingerprint};
         reason = typeof result.reason === 'string' ? result.reason : '';
         phase = 'ready';
       }).catch(error => {
-        if (job.epoch === epoch) fail(messageOf(error,'DeepSeek opponent decision failed'));
+        if (job.epoch === epoch) fail(messageOf(error,'AI opponent decision failed'));
       }).finally(() => {
         if (pending === job) { pending = null; changed(); }
       });
@@ -2878,7 +2731,7 @@ const PCOLDeepSeekOpponent = (() => {
       try { actual = controller.getStrokeVars(); } catch (_) {}
       if (!expected || !actual || actual.length !== 8 ||
           expected.some((value,index) => !Number.isFinite(actual[index]) || Math.abs(value - actual[index]) > 1e-6)) {
-        fail('DeepSeek opponent stroke verification failed'); return false;
+        fail('AI opponent stroke verification failed'); return false;
       }
       expected = null; return true;
     }
@@ -2896,10 +2749,10 @@ const PCOLMatchRecorder = (() => {
       onload:r=>resolve({ok:r.status>=200&&r.status<300,json:async()=>JSON.parse(r.responseText)}),onerror:()=>reject(new Error('unavailable')),ontimeout:()=>reject(new Error('timeout'))}));
   }
   function create({version='',source='browser',onChange=()=>{},fetchImpl=localFetch}={}) {
-    let enabled=true,thinking=true,frameId=null,sequence=0,lastStroke=null,disposed=false,running=null,error=null,saved=0,dropped=0,checkpoint=null,lastDrop=null;
+    let enabled=true,frameId=null,sequence=0,lastStroke=null,disposed=false,running=null,error=null,saved=0,dropped=0,checkpoint=null,lastDrop=null;
     const outbox=[],dropReasons={oversize:0,outbox:0,serialization:0};
     const session=Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);
-    const getStatus=()=>({enabled,thinking,frameId,session,pending:outbox.length,saved,dropped,error,status:error?'error':outbox.length?'pending':'saved'});
+    const getStatus=()=>({enabled,frameId,session,pending:outbox.length,saved,dropped,error,status:error?'error':outbox.length?'pending':'saved'});
     const notify=()=>{try {onChange(getStatus());}catch(_) {}};
     const entryFor=(kind,data,correlation={},frame=frameId)=>({schema:1,id:session+'_'+(++sequence),session,seq:sequence,source,frameId:frame,at:new Date().toISOString(),kind,data,
       ...Object.fromEntries(['turnId','decisionId','requestId','strokeId'].filter(key=>correlation[key]!=null).map(key=>[key,String(correlation[key])]))});
@@ -2931,7 +2784,7 @@ const PCOLMatchRecorder = (() => {
     function event(kind,data={},correlation={}) {
       if(!enabled || !frameId || disposed) return null;
       const entry=entryFor(kind,data,correlation);
-      const compact=['decision.start','model.request','stroke.end'].includes(kind);
+      const compact=['decision.start','stroke.end'].includes(kind);
       let raw;try{raw=JSON.stringify(entry,compact?(key,value)=>key==='serial'?undefined:value:undefined);}catch(_){drop(entry,'serialization');notify();return null;}
       if(raw.length>60000){drop(entry,'oversize');notify();return null;}
       while(outbox.length>=100 || outbox.reduce((sum,v)=>sum+v.length,0)+raw.length>1000000){const index=running?1:0;if(index>=outbox.length)break;drop(JSON.parse(outbox.splice(index,1)[0]),'outbox');}
@@ -2941,7 +2794,7 @@ const PCOLMatchRecorder = (() => {
     }
     return {startFrame(meta={}){frameId=session+'_'+(++sequence);lastStroke=null;event('frame.start',{version,...meta});return frameId;},
       event,endFrame(summary={}){return event('frame.end',summary);},mark(label,extra={}){return event('mark',{label,strokeId:lastStroke,...extra},{strokeId:lastStroke});},
-      context:()=>({frameId,session,enabled,thinking}),setEnabled(value){enabled=!!value;notify();},setThinking(value){thinking=!!value;notify();},getStatus,flush,
+      context:()=>({frameId,session,enabled}),setEnabled(value){enabled=!!value;notify();},getStatus,flush,
       dispose(){disposed=true;outbox.length=0;checkpoint=null;notify();}};
   }
   return {create};
@@ -2949,21 +2802,12 @@ const PCOLMatchRecorder = (() => {
 
 /* Developer-only, bounded decisions from saved settled positions. Never executes live shots. */
 const PCOLBench = (() => {
-  function create({capture,getTrial,makeSearch,getState,skill,version,createClient}) {
+  function create({capture,getTrial,makeSearch,getState,skill,version}) {
     const randomFor=seed=>{let n=seed>>>0;return()=>{n=(Math.imul(n,1664525)+1013904223)>>>0;return (n+.5)/4294967296;};};
     async function decide(position,options={}) {
       const trial=getTrial().createSession(position.snapshot),search=makeSearch(trial);
       try{
         const state=position.state||getState(position.snapshot);
-        if(options.modelPlan){
-          let searched;
-          const client=createClient({getTrial:()=>trial,getSearch:()=>({...search,run:async opts=>searched=await search.run({...opts,trial,snapshot:position.snapshot,state})}),
-            getSettings:()=>({engine:options.engine||'deepseek',thinking:true,requireModel:true}),
-            getContext:()=>({...state.rules,balls:state.balls,style:state.style,remainingPoints:state.remainingPoints,lastOutcome:options.lastOutcome})});
-          client.setPlan(options.activePlan||null);
-          const decision=await client.decide(options);
-          return {...searched,activePlan:decision.activePlan,model:{source:decision.source,reason:decision.reason,usage:decision.usage}};
-        }
         return await search.run({...options,trial,snapshot:position.snapshot,state});
       }
       finally{trial.dispose();}
@@ -2985,7 +2829,7 @@ const PCOLBench = (() => {
           result=await trial.simulate(shot,{nominatedColour:candidate.nominatedColour,maxWallMs:Math.min(5000,left)});
         } finally {trial.dispose();}
         lastOutcome={actor,score:result.adjudication?.score,foulCode:result.adjudication?.foulCode};
-        shots.push({targetIndex:candidate.targetIndex,kind:candidate.kind,searchMs:found.elapsedMs,source:found.model?.source,
+        shots.push({targetIndex:candidate.targetIndex,kind:candidate.kind,searchMs:found.elapsedMs,source:'local',
           activePlan,searchIntent:found.searchIntent,
           score:result.adjudication?.score,foulCode:result.adjudication?.foulCode,status:result.status,
           cue:result.nextBalls?.find(b=>b.n===0)});
@@ -3012,13 +2856,13 @@ const PCOLArena = (() => {
     const status=()=>({...last,recording:recorder?.getStatus?.(),series:series&&copy(series)});
     const randomFor=seed=>{let n=seed>>>0;const random=()=>{n=(Math.imul(n,1664525)+1013904223)>>>0;return (n+.5)/4294967296;};random.state=()=>n;return random;};
     function cancel(){if(series?.busy)series.cancelled=true;if(!job)return;job.cancelled=true;job.manager?.cancel();job.search?.cancel();job.trial?.cancel();for(const client of job.clients)client.cancel();}
-    async function run({players,maxShots=160,seed=1,budgetMs=30000,resumeFrom=null,seriesContext=null}={}) {
+    async function run({players=[{engine:'local'},{engine:'local'}],maxShots=160,seed=1,budgetMs=30000,resumeFrom=null,seriesContext=null}={}) {
       if(job)throw new Error('Arena is already running');
       if(series?.busy&&!seriesContext)throw new Error('Arena series is already running');
-      if(!Array.isArray(players)||players.length!==2||players.some(p=>!['cursor','deepseek'].includes(p.engine)))throw new Error('Arena requires two explicit model participants');
-      // Physics and search settings are identical; only provider/model differ.
+      if(!Array.isArray(players)||players.length!==2||players.some(p=>p.engine!=='local'))throw new Error('Arena requires two local AI participants');
+      // Preserve the same execution settings for both seats.
       if((players[0].skill||'strong')!==(players[1].skill||'strong')||(players[0].style||'balanced')!==(players[1].style||'balanced'))throw new Error('Arena requires matching skill and style');
-      const participants=players.map((p,seat)=>({...p,seat,provider:p.provider||p.engine,skill:p.skill||'strong',style:p.style||'balanced'}));
+      const participants=players.map((p,seat)=>({...p,seat,provider:'local',skill:p.skill||'strong',style:p.style||'balanced'}));
       const current=job={cancelled:false,clients:[],snapshot:null,pending:copy(resumeFrom?.pending||null),shots:0,lastOutcome:copy(resumeFrom?.lastOutcome||null)};
       const random=randomFor(resumeFrom?.randomState??seed),limit=Math.max(1,Math.min(1000,Math.floor(Number(maxShots)||160)));
       const sharedBudget=Math.max(100,Math.min(65000,Number(budgetMs)||30000));
@@ -3059,20 +2903,18 @@ const PCOLArena = (() => {
         emit('ruling.free-ball',{assessment:test,available:r.freeBallAvailable,uncertain,experimental:uncertain,
           basis:uncertain?'unknown-assessment-no-free-ball':'geometric-assessment'});
       }
-      const strict=result=>{if(!['deepseek','cursor','continued-plan','local-recovery'].includes(result.source))throw Object.assign(new Error('Arena model selection failed: '+result.source),{code:'model-failure'});return result;};
       try {
         const captured=resumeFrom?.snapshot||await capture();current.snapshot=copy(captured.snapshot||captured);
         seat=current.snapshot.rules.playerIndex;
         if(!current.snapshot.rules?.ballOn||current.snapshot.rules.ballOn===65535||current.snapshot.rules.scores?.length!==2)throw new Error('Arena requires a settled two-player snooker frame');
         recorder=createRecorder({version,source:'arena',mode:'arena'});
         recorder.startFrame({version,build,source:'arena',mode:'arena',execution:'isolated-original-physics',autoRefereePolicy,
-          modelRecoveryPolicy:'one-transient-failure-local-trial-candidate; consecutive-failure-stops',participants,seed,maxShots:limit,budgetMs:sharedBudget,position:copy(current.snapshot),
+          participants,seed,maxShots:limit,budgetMs:sharedBudget,position:copy(current.snapshot),
           ...(resumeFrom?.frameId?{resumedFrom:resumeFrom.frameId,previousShots:resumeFrom.shots,decisionHistoryReset:true}:{}),series:seriesContext});
         if(resumeFrom?.ruling)emit('ruling.resume',copy(resumeFrom.ruling));
         if(resumeFrom?.reviewFoul||current.snapshot.rules.freeBallReview){freeBallAssessment();checkpoint('resume-foul-review');}
-        current.clients=participants.map((settings,actor)=>createClient({getSearch:()=>current.search,getTrial:()=>current.trial,getSettings:()=>({...settings,requireModel:true,allowArenaRecovery:true}),
+        current.clients=participants.map((settings,actor)=>createClient({getSearch:()=>current.search,getTrial:()=>current.trial,
           getContext:()=>{const s=state(),r=current.snapshot.rules;return {...r,style:s.style,balls:s.balls,remainingPoints:s.remainingPoints,lastOutcome:current.lastOutcome,freeBall:{available:r.freeBallAvailable,nominee:r.freeBallNominee}};},
-          getLogContext:()=>({...recorder.context(),turnId,decisionId,seat:actor,provider:settings.provider,engine:settings.engine,model:settings.model,source:'arena',mode:'arena',execution:'isolated-original-physics'}),
           onEvent:(kind,data)=>emit(kind,{...data,seat:actor,provider:settings.provider})}));
         current.clients.forEach((client,i)=>client.setPlan?.(resumeFrom?.activePlans?.[i]||null));
         for(;current.shots<limit&&!current.cancelled;) {
@@ -3084,13 +2926,13 @@ const PCOLArena = (() => {
             if(concession.eligible&&concession.excess>=28){winner=1-seat;reason='concession';emit('concession.check',{...concession,threshold:28,action:'concede',source:'local-policy'});break;}
           }
           turnId='arena-turn-'+r.nRounds+'-'+seat;decisionId=turnId+'-'+(++decisionSequence);strokeId=null;
-          emit('decision.start',{engine:participants[seat].engine,model:participants[seat].model,position:copy(current.snapshot),
+          emit('decision.start',{engine:'local',position:copy(current.snapshot),
             randomState:random.state(),pending:copy(current.pending),lastOutcome:current.lastOutcome});
           bindTrial();let prepared=null,committed=false,turnError=null;
           const needs=current.pending||r.inHand>0||(r.freeBallAvailable&&r.freeBallNominee==null&&!r.freeBallDeclined)||s.touching?.requiresColourDeclaration;
           if(needs) {
             current.manager=createTurnManager({getState:state,getPending:()=>current.pending,getTrial:()=>current.trial,options:turnOptions,geometry,policy,skill,
-              choose:async request=>strict(await current.clients[seat].chooseTurn({...request,forceModel:true})),onEvent:emit,onError:error=>{turnError=error;},
+              choose:request=>current.clients[seat].chooseTurn(request),onEvent:emit,onError:error=>{turnError=error;},
               commit:(choice,kind,why,source)=>{
                 emit('turn.choice',{kind,choiceId:choice.id,action:choice.action,position:choice.position,nominee:choice.nominee,reason:why,source});
                 if(kind==='foul') {
@@ -3107,7 +2949,7 @@ const PCOLArena = (() => {
             if(!prepared&&needs&&typeof needs==='object')continue;
             bindTrial();
           }
-          const decision=prepared||strict(await current.clients[seat].decide({forceModel:true,budgetMs:sharedBudget}));
+          const decision=prepared||await current.clients[seat].decide({budgetMs:sharedBudget});
           if(current.cancelled)break;
           const candidate=decision.candidate,before=copy(current.snapshot),actual=skill.perturb(candidate.shot,candidate.skill,random);
           strokeId=decisionId+'-stroke';emit('stroke.start',{actor:seat,candidateId:candidate.id,nominalShot:candidate.shot,actualShot:actual,reason:decision.reason});
@@ -3195,9 +3037,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.12.0";
+  const VERSION = "0.12.1";
   const DEVELOPMENT = true;
-  const BUILD_ID = "dce23d7c6923";
+  const BUILD_ID = "662f98b8c825";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）']];
@@ -3225,7 +3067,7 @@ const PCOLArena = (() => {
     if(!s.recorder || s.recordingFrame || !s.g._model._gContext.ballOn)return;
     s.recordingFrame=true;s.recordTurn=0;s.recordDecision=0;s.currentTurnId=null;s.currentDecisionId=null;s.lastStrokeRecord=null;
     s.frameStats={startedAt:Date.now(),players:[0,1].map(()=>({shots:0,points:0,fouls:0,penaltyGiven:0,opponentSnookers:0,maxBreak:0})),
-      decisions:0,modelSelections:0,modelChangedChoice:0,localFallbacks:0,searchMs:0,selectionMs:0};
+      decisions:0,searchMs:0,selectionMs:0};
     s.recorder.startFrame({mode:s.hotseat?'hotseat':s.practice||'single',build:BUILD_ID,initial:recordState(s)});
   }
   function endRecordFrame(s,reason) {
@@ -3245,9 +3087,6 @@ const PCOLArena = (() => {
     if(stats){
       if(kind==='search.complete')stats.searchMs+=data.elapsedMs||0;
       if(kind==='selection.complete'){stats.decisions++;stats.selectionMs+=data.elapsedMs||0;
-        if(data.source==='deepseek')stats.modelSelections++;
-        if(data.changedLocalChoice)stats.modelChangedChoice++;
-        if(data.source==='local-fallback')stats.localFallbacks++;
       }
     }
     return s.recorder?.event(kind,data,{turnId:s.currentTurnId,decisionId:s.currentDecisionId,requestId:data.requestId,...correlation});
@@ -4123,7 +3962,7 @@ const PCOLArena = (() => {
     hookColourRespots(s);
     API.app = app;
     let trial = null, search = null, localAI = null;
-    s.aiSettings={skill:'strong',style:'balanced',engine:'local',thinking:false};s.requestedEnhanced=false;
+    s.aiSettings={skill:'strong',style:'balanced',engine:'local'};s.requestedEnhanced=false;
     s.recorder=DEVELOPMENT?PCOLMatchRecorder.create({version:VERSION,onChange:()=>{if(s.host)render(s);}}):null;
     const getTrial = () => trial || (trial = PCOLTrial.create({game:g,factories:require.m,
       isReady:() => app._currentController===g && m._gState===4 && !s.shot && !s.modal && !s.placement && (!s.pending||s.turnManager?.getStatus().busy) && !s.conceded,
@@ -4156,28 +3995,27 @@ const PCOLArena = (() => {
             getRules:()=>({...m._gContext,scores:scores(m),nominatedColour:null,nominationSource:null,freeBallNominee:null,freeBallAvailable:false,freeBallReview:false,freeBallDeclined:false,respottedBlack:false})}).snapshot();},
         skill:PCOLShotSkill,core:PCOLCore,geometry:PCOLSearchGeometry,policy:PCOLTacticalPolicy,brain:PCOLTacticalBrain,
         development:PCOLDevelopment,turnOptions:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),
-        createClient:PCOLDeepSeek.create,createTurnManager:PCOLTurnManager.create,
+        createClient:PCOLLocalAI.create,createTurnManager:PCOLTurnManager.create,
         freeze:()=>{g._paused=true;s.recorder=null;s.recordingFrame=false;s.host?.remove();},game:g};
     s.assessPlan=expected=>PCOLTacticalBrain.compliance(getSearchState({balls:balls(g),rules:{...m._gContext,scores:scores(m)}}),expected,PCOLSearchGeometry);
     const getSearch = () => search || (search = makeSearch());
     API.search = {run:options=>getSearch().run(options),cancel:()=>search?.cancel(),
       getStatus:()=>search?.getStatus() || {busy:false,lastResult:null}};
     const localTools=DEVELOPMENT && ['127.0.0.1','localhost'].includes(window.location.hostname);
-    if(localTools)API.bench=PCOLBench.create({version:VERSION,getTrial,makeSearch,getState:getSearchState,skill:PCOLShotSkill,createClient:PCOLDeepSeek.create,
+    if(localTools)API.bench=PCOLBench.create({version:VERSION,getTrial,makeSearch,getState:getSearchState,skill:PCOLShotSkill,
       capture:()=>{const snapshot=getTrial().snapshot();return {snapshot,state:getSearchState(snapshot)};}});
     if(localTools)API.arena=PCOLArena.create({version:VERSION,build:BUILD_ID,getTrial,makeSearch,getState:getSearchState,
       capture:()=>({snapshot:getTrial().snapshot()}),skill:PCOLShotSkill,core:PCOLCore,geometry:PCOLSearchGeometry,policy:PCOLTacticalPolicy,
       turnOptions:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),
-      createRecorder:PCOLMatchRecorder.create,createClient:PCOLDeepSeek.create,createTurnManager:PCOLTurnManager.create});
-    s.getLocalAI = () => localAI || (localAI = PCOLDeepSeek.create({getSearch,getTrial,onChange:()=>render(s),
-      getSettings:()=>({...s.aiSettings,engine:'local',thinking:false}),getLogContext:()=>s.recorder&&({...s.recorder.context(),turnId:s.currentTurnId,decisionId:s.currentDecisionId}),
+      createRecorder:PCOLMatchRecorder.create,createClient:PCOLLocalAI.create,createTurnManager:PCOLTurnManager.create});
+    s.getLocalAI = () => localAI || (localAI = PCOLLocalAI.create({getSearch,getTrial,onChange:()=>render(s),
       onEvent:(kind,data)=>recordEvent(s,kind,data),
       getContext:()=>({ballOn:m._gContext.ballOn,playerIndex:m._gContext.playerIndex,nRounds:m._gContext.nRounds,scores:scores(m),
         nominatedColour:s.nominatedColour,freeBall:{available:s.freeBallAvailable,nominee:s.freeBallNominee},
         style:s.aiSettings.style,lastOutcome:s.lastResult&&{actor:s.lastBefore?.context.playerIndex,round:m._gContext.nRounds,score:s.lastResult.score,foulCode:s.lastResult.foulCode},
         remainingPoints:PCOLCore.remainingPoints(balls(g),m._gContext.ballOn),breakScore:m._players[m._gContext.playerIndex]?.brk||0,
         balls:balls(g).filter(b=>b.active).map(b=>({i:b.i,n:b.n,x:b.x,z:b.z}))})}));
-    s.getOpponent = () => s.opponent || (s.opponent = PCOLDeepSeekOpponent.create({game:g,
+    s.getOpponent = () => s.opponent || (s.opponent = PCOLLocalOpponent.create({game:g,
       decide:()=>{if(s.preparedShot){const ready=s.preparedShot;s.preparedShot=null;return Promise.resolve(ready);}beginDecision(s);return s.getLocalAI().decide();},getSnapshot:()=>getTrial().snapshot(),cancelDecision:()=>localAI?.cancel(),
       prepareCandidate:candidate=>{
         const shot=PCOLShotSkill.perturb(candidate.shot,candidate.skill);
@@ -4232,7 +4070,7 @@ const PCOLArena = (() => {
       cancel:()=>{s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();},
       getStatus:()=>({...(localAI?.getStatus()||{busy:false,phase:'idle'}),turn:s.turnManager.getStatus(),settings:{...s.aiSettings},opponent:s.opponent?.getStatus()||{enabled:false}})};
     if(DEVELOPMENT)API.recording={getStatus:()=>s.recorder.getStatus(),setEnabled:v=>s.recorder.setEnabled(v),
-      setThinking:v=>s.recorder.setThinking(v),flush:()=>s.recorder.flush(),mark:label=>markStroke(s,label)};
+      flush:()=>s.recorder.flush(),mark:label=>markStroke(s,label)};
     s.getOpponent().setEnabled(false);
     patches.push(() => {API.arena?.cancel();endRecordFrame(s,'uninstalled');s.recorder?.flush();s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();search?.cancel();trial?.dispose();});
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
