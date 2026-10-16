@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.11.1
+// @version      0.12.0
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -3195,9 +3195,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.11.1";
+  const VERSION = "0.12.0";
   const DEVELOPMENT = true;
-  const BUILD_ID = "8faa311b551b";
+  const BUILD_ID = "dce23d7c6923";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）']];
@@ -3410,16 +3410,16 @@ const PCOLArena = (() => {
     host.style.cssText = 'position:fixed;left:16px;bottom:14px;z-index:2147483000;font:13px/1.5 "Microsoft YaHei",sans-serif;color:#fff;';
     const shadow = host.attachShadow({ mode: 'open' });
     shadow.innerHTML = `<style>
-      *{box-sizing:border-box}button{font:inherit;cursor:pointer;border:1px solid #ab8544;border-radius:5px;background:#28241b;color:#fff;padding:8px 12px}button:hover{background:#65512e}button:focus-visible{outline:2px solid #f5c368;outline-offset:2px}button.primary{background:#aa782d;color:#fff}button:disabled{opacity:.45;cursor:default}.bar{display:flex;gap:9px;align-items:center;padding:7px 10px;background:#171610e8;border:1px solid #88734c;border-radius:6px}.bar button{padding:3px 7px}.veil{position:fixed;inset:0;display:grid;place-items:center;background:#0009}.panel{width:min(540px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:#171914;border:1px solid #b69758;border-radius:10px;padding:24px;box-shadow:0 18px 60px #0008}.panel h2{font-size:21px;margin:0 0 12px}.panel p{margin:9px 0 18px;color:#dedbcd}.choices{display:flex;gap:9px;flex-wrap:wrap}.note{font-size:12px;color:#b8baa9;margin-top:14px}
-      [hidden]{display:none!important}.bar{max-width:calc(100vw - 16px);flex-wrap:wrap}.drag{cursor:grab;touch-action:none;user-select:none;padding:0 4px;color:#e7c986;font-size:18px}.drag:active{cursor:grabbing}
-      .bar[data-practice="true"] .status{cursor:grab;touch-action:none;user-select:none;font-weight:500}
-      .mode-options>.mode-option:last-child:nth-child(odd){grid-column:1/-1}
-      .opponent-panel{width:min(680px,calc(100vw - 32px));padding:20px 24px}.setting-section{margin-top:20px}.setting-section h3{font-size:14px;color:#e7c986;margin:0 0 9px}.setting-section p{font-size:12px;margin:0 0 10px;color:#b8baa9}.mode-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.mode-option{text-align:left;padding:13px 14px;display:flex;flex-direction:column;gap:7px}.mode-option .mode-name{font-weight:600;display:flex;justify-content:space-between;gap:8px}.mode-option small{font-size:12px;line-height:1.6;color:#d2d0c1;font-weight:400}.mode-option .mode-use{font-size:11px;color:#e7c986}.selected-label{font-size:11px;white-space:nowrap;color:#f5d79d}button[aria-pressed="true"]{background:#6a512b;border-color:#e5bd72;box-shadow:inset 0 0 0 1px #e5bd72}.setting-row{display:grid;grid-template-columns:50px 1fr;gap:10px;align-items:center;margin-top:10px}.setting-row .choices{gap:7px}.setting-row button{flex:1;padding:7px 9px;white-space:nowrap}.current-setting{color:#e7c986;margin:0 0 12px}.setting-error{color:#efc28f;margin-top:12px}.settings-footer{display:flex;justify-content:flex-end;margin-top:18px}@media(max-width:470px){.mode-options{grid-template-columns:1fr}.opponent-panel{padding:18px}.setting-row{grid-template-columns:1fr;gap:5px}}
-    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status" title="拖动浮窗；双击恢复位置"></span><button type="button" class="hotseat" hidden>开始双人局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="practice-controls"></div><div class="modal"></div>`;
+      *{box-sizing:border-box}button{font:inherit;cursor:pointer;border:1px solid #3b5149;border-radius:9px;background:#21332d;color:#edf3ef;padding:10px 15px;transition:background .15s,border-color .15s}button:hover{background:#304b40;border-color:#739a83}button:focus-visible{outline:2px solid #dfc591;outline-offset:3px}button.primary{background:#d7bf8c;border-color:#d7bf8c;color:#18271f;font-weight:700}button.primary:hover{background:#ebd5a8}button:disabled{opacity:.45;cursor:default}[hidden]{display:none!important}
+      .bar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 32px);padding:9px 12px;background:#101f19f2;border:1px solid #446352;border-radius:13px;box-shadow:0 5px 24px #0005}.bar button{padding:6px 11px;font-size:12px;order:2}.bar .ai{order:1;background:#d7bf8c;border-color:#d7bf8c;color:#18271f;font-weight:700}.bar .recording{order:3;background:transparent;color:#adc2b6;border-color:transparent}.bar .mark{order:3;background:transparent}.bar .concede{color:#dfb6a9}.status{max-width:min(400px,calc(100vw - 100px));color:#d9e6dd;line-height:1.6;padding-right:8px}.drag{cursor:grab;touch-action:none;user-select:none;padding:0 3px;color:#8aa893;font-size:20px}.drag:active{cursor:grabbing}.bar[data-practice="true"] .status{cursor:grab;touch-action:none;user-select:none;font-weight:500}
+      .veil{position:fixed;inset:0;display:grid;place-items:center;background:#07100cd9;padding:16px}.panel{position:relative;width:min(540px,100%);max-height:calc(100dvh - 32px);overflow:auto;overscroll-behavior:contain;background:#13251d;border:1px solid #4a6553;border-radius:18px;padding:28px;box-shadow:0 24px 90px #0009;line-height:1.6}.panel h2{font-size:24px;font-weight:600;letter-spacing:.02em;margin:0 42px 5px 0;color:#f3f1e6}.panel p{margin:6px 0 18px;color:#aebfb3;font-size:13px}.choices{display:flex;gap:9px;flex-wrap:wrap}.note{font-size:12px;color:#a4b7a8;margin-top:16px;line-height:1.7}.dismiss-dialog{position:absolute;right:18px;top:18px;width:34px;height:34px;padding:0;font-size:23px;background:transparent;border-color:transparent;color:#b7c8ba}.dismiss-dialog:hover{background:#2a3e31}
+      .opponent-panel{width:min(660px,100%)}.ai-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border:1px solid #48614e;background:#1d3528;border-radius:12px;margin-top:20px}.ai-summary strong{font-size:15px;color:#e9efe5}.ai-summary small{display:block;color:#a5bca9;font-size:12px;margin-top:3px}.local-badge{color:#d9c18e;font-size:11px;white-space:nowrap;border:1px solid #6d7051;border-radius:20px;padding:3px 9px}.setting-section{margin-top:23px}.section-heading{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px}.section-heading h3{font-size:14px;font-weight:600;color:#e2e9df;margin:0}.section-heading span{font-size:11px;color:#97af9d}.setting-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.setting-option{text-align:left;padding:13px 14px;background:#192d22;border-color:#3b5141;position:relative}.setting-option strong{display:block;font-weight:600;font-size:14px}.setting-option small{display:block;color:#a0b49f;font-size:11px;margin-top:5px;line-height:1.6}.setting-option[aria-pressed="true"]{background:#304333;border-color:#d8c28c;box-shadow:inset 0 0 0 1px #d8c28c}.setting-option[aria-pressed="true"] strong{color:#f2dba7}.setting-option[aria-pressed="true"] strong::after{content:' ✓';font-size:11px}.current-setting{font-size:12px;color:#d7c395;padding-top:17px;margin-top:22px;border-top:1px solid #334b3b}.settings-footer{display:flex;justify-content:flex-end;gap:9px;margin-top:22px}.settings-footer .primary{min-width:146px}.record-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:18px 0}.record-stat{padding:14px 10px;background:#1c3225;border:1px solid #354e3c;border-radius:10px;text-align:center}.record-stat strong{display:block;font-size:25px;color:#e8d4a6;font-variant-numeric:tabular-nums}.record-stat span{font-size:12px;color:#a7bca9}
+      @media(max-width:520px){.panel{padding:23px 18px;border-radius:14px}.panel h2{font-size:21px}.setting-options{gap:6px}.setting-option{padding:11px 8px}.setting-option strong{font-size:12px}.section-heading span{font-size:10px}.bar{padding:8px;gap:5px}.bar button{padding:6px 8px}.ai-summary{padding:13px}.settings-footer{flex-wrap:wrap}}
+    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status" title="拖动浮窗；双击恢复位置"></span><button type="button" class="hotseat" hidden>双人对局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="practice-controls"></div><div class="modal"></div>`;
     document.documentElement.appendChild(host);
     s.host = host; s.shadow = shadow;
-    const deepButton=document.createElement('button');deepButton.type='button';deepButton.className='deepseek';
-    deepButton.textContent='对手设置';deepButton.onclick=()=>showDeepSeek(s);shadow.querySelector('.bar').append(deepButton);
+    const aiButton=document.createElement('button');aiButton.type='button';aiButton.className='ai';
+    aiButton.textContent='与 AI 对局';aiButton.onclick=()=>showOpponent(s);shadow.querySelector('.bar').append(aiButton);
     if(DEVELOPMENT){
       const recordButton=document.createElement('button');recordButton.type='button';recordButton.className='recording';
       recordButton.onclick=()=>showRecording(s);shadow.querySelector('.bar').append(recordButton);
@@ -3455,22 +3455,21 @@ const PCOLArena = (() => {
     retry.disabled = !canRetryPractice(s) || s.modal;
     retry.title = '恢复上一杆前的球位、分数和单杆分';
     const touching=live?touchingNotice(s):'';
-    s.shadow.querySelector('.status').textContent = home ? 'PCOL · 规则与练习' : custom ? '自由练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
+    s.shadow.querySelector('.status').textContent = home ? 'PCOL · 对局与练习' : custom ? '自由练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`;
     const eligible = live && !s.pending && s.g._model._gState === 4 && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && (s.freeBallAvailable || s.freeBallReview || s.g._model._gContext.ballOn === 252);
     s.shadow.querySelector('.choose').hidden = !eligible;
     s.shadow.querySelector('.concede').hidden = !(live && concessionInfo(s).available && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && !s.modal);
-    const deepStatus=API.deepseek?.getStatus(),opponent=deepStatus?.opponent;
-    const deepButton=s.shadow.querySelector('.deepseek');
-    deepButton.hidden=live&&(!opponent?.enabled||s.hotseat||s.practice);
-    const engine=opponentMode(s).label;
-    const phase=opponent?.error||deepStatus.turn?.failed?'已暂停':deepStatus.turn?.busy?'选择回合方案':opponent?.busy&&deepStatus.phase==='search'?'正在试打':opponent?.busy&&deepStatus.phase==='model'?'DS 正在选杆':'';
-    deepButton.textContent=home?'AI 对手设置':'对手：'+engine+(phase?' · '+phase:'');
-    const decision=deepStatus?.lastDecision;
-    deepButton.title=opponent?.error || (decision?.source==='local'?'本地试打后，选择评分最高的合法方案。':decision?.source==='local-fallback'?'DS 未完成选择，已采用本地验证方案。':decision?.reason) || '设置选杆方式、准度与打法';
+    const aiStatus=API.ai?.getStatus(),opponent=aiStatus?.opponent;
+    const aiButton=s.shadow.querySelector('.ai');
+    aiButton.hidden=live&&(!opponent?.enabled||s.hotseat||s.practice);
+    const phase=opponent?.error||aiStatus?.turn.failed?'已暂停':aiStatus?.turn.busy?'选择回合方案':opponent?.busy?'正在试打':'设置';
+    aiButton.textContent=home?'与 AI 对局':'本地 AI · '+phase;
+    aiButton.title=opponent?.error || '调整本地 AI 的击球准度与战术倾向';
     if(DEVELOPMENT){const r=s.recorder?.getStatus();
-      s.shadow.querySelector('.recording').textContent='比赛记录：'+(!r?.enabled?'已暂停':r.error?'等待保存':r.pending?'保存中':'开启');
+      s.shadow.querySelector('.recording').textContent='记录 · '+(!r?.enabled?'已暂停':r.error?'待保存':r.pending?'保存中':'开启');
       s.shadow.querySelector('.recording').title=r?`已保存 ${r.saved}，待保存 ${r.pending}，丢弃 ${r.dropped}`:'';
       s.shadow.querySelector('.mark').disabled=!s.lastBefore;
+      s.shadow.querySelector('.mark').hidden=home;
     }
     if(s.editor){s.editor.setVisible(controlsVisible);if(controlsVisible)s.editor.update(editableBalls(s),s.placement?.selectedIndex ?? null,Boolean(s.placement));}
     if ((live || home) && s.panelPosition && !s.shadow.querySelector('.bar').hidden) positionPanel(s,s.panelPosition.x,s.panelPosition.y);
@@ -3865,96 +3864,77 @@ const PCOLArena = (() => {
       ctl.gotoState0(true);ctl._ai._simEvolution=-1;ctl._ai.checkRestart(g._simulator,g._model);
     }
   }
-  async function enableDeepSeek(s,enabled) {
-    if(enabled && s.aiSettings.engine==='deepseek'){
-      const status=await s.getDeepSeek().status();
-      if(!status.configured)throw new Error('请先运行本地 DeepSeek 配置工具并保存密钥。');
-    }
+  function enableLocalAI(s,enabled) {
     s.getOpponent().setEnabled(enabled);
     s.turnManager?.cancel();s.preparedShot=null;s.aiPreparedMark=null;
     if(!enabled && s.pending && s.g._model._gContext.playerIndex!==s.g._fpc.gPlayerIndex)resolveFoul(s,'continue');
     if(!s.shot)restartAI(s);render(s);
     return enabled;
   }
-  function deepSeekError(s,error) {
+  function localAIError(s,error) {
     recordEvent(s,'decision.error',{message:error.message});
     if(/position changed|decision is stale/i.test(error.message)){
       s.turnManager?.cancel();s.opponent?.reset();restartAI(s);return;
     }
     if(s.modal || s.app._currentController!==s.g)return;
     dialog(s,'对手暂停',error.message,[
-      ['重试',()=>{closeModal(s);s.turnManager?.cancel();s.opponent.reset();restartAI(s);s.ensureAITurn?.();},true],
-      ['改用本地 AI',()=>{s.aiSettings.engine='local';s.aiSettings.thinking=false;recordEvent(s,'settings',{...s.aiSettings});closeModal(s);enableDeepSeek(s,true);}],
+      ['重试选杆',()=>{closeModal(s);s.turnManager?.cancel();s.opponent.reset();restartAI(s);s.ensureAITurn?.();},true],
       ['关闭提示',()=>closeModal(s)]
-    ],'出杆已停止。重新开始或退出球局会取消当前思考。');
+    ],'当前出杆已停止。重试会重新检查球局并搜索候选。');
   }
-  const OPPONENT_MODES=[
-    {id:'local',label:'本地 AI',engine:'local',thinking:false,use:'日常对局',description:'程序完整试打后自行选杆，不调用 DS。'},
-    {id:'fast',label:'DS 快速选杆',engine:'deepseek',thinking:false,use:'快速规划',description:'需要新计划时，请 DS 一次给出主方案与后备方案；不启用模型思考。'},
-    {id:'thinking',label:'DS 思考选杆',engine:'deepseek',thinking:true,use:'规划整次上手',description:'需要新计划时请 DS 思考；走位兑现就沿用计划，失位再重规划。可记录模型返回的思考文本。'}
-  ];
-  function opponentMode(s) {
-    return OPPONENT_MODES.find(mode=>mode.engine===s.aiSettings.engine&&mode.thinking===s.aiSettings.thinking)||OPPONENT_MODES[0];
+  function dismissiblePanel(s,panel) {
+    const close=document.createElement('button');close.type='button';close.className='dismiss-dialog';close.textContent='×';close.setAttribute('aria-label','关闭');close.title='关闭（Esc）';close.onclick=()=>closeModal(s);panel.append(close);
+    panel.addEventListener('keydown',e=>{
+      if(e.key==='Escape'){e.preventDefault();closeModal(s);}
+      if(e.key==='Tab'){
+        const buttons=[...panel.querySelectorAll('button:not(:disabled)')],first=buttons[0],last=buttons[buttons.length-1];
+        if(e.shiftKey&&s.shadow.activeElement===first){e.preventDefault();last.focus();}
+        else if(!e.shiftKey&&s.shadow.activeElement===last){e.preventDefault();first.focus();}
+      }
+    });
   }
-  function showDeepSeek(s) {
+  function showOpponent(s) {
     const fromHome=s.app._currentController===s.app._controllers.home;
-    const panel=dialog(s,'对手设置','本地 AI 按几何任务搜索；DS 负责上手计划，本地试打负责选杆和后备补搜。',[]);
-    panel.classList.add('opponent-panel');panel.querySelector('.choices').remove();
-    const current=document.createElement('div');current.className='current-setting';current.setAttribute('aria-live','polite');panel.append(current);
-    const modeSection=document.createElement('div');modeSection.className='setting-section';
-    modeSection.innerHTML='<h3>选杆方式</h3>';
-    const modes=document.createElement('div');modes.className='mode-options';modes.setAttribute('role','group');modes.setAttribute('aria-label','选杆方式');modeSection.append(modes);panel.append(modeSection);
-    const errorText=document.createElement('div');errorText.className='setting-error';errorText.setAttribute('role','status');
-    const skillLabels={club:'俱乐部',strong:'高手',expert:'专家'},styleLabels={balanced:'均衡',attacking:'连续进攻',defensive:'控制防守'};
+    const panel=dialog(s,'本地 AI 对局',fromHome?'选好击球准度与战术倾向，直接开局。':'调整击球准度与战术倾向，新设置用于后续选杆。',[]);
+    panel.classList.add('opponent-panel');panel.querySelector('.choices').remove();dismissiblePanel(s,panel);
+    const summary=document.createElement('div');summary.className='ai-summary';
+    summary.innerHTML='<div><strong>本地 AI</strong><small>根据球局比较进攻、走位、拆球与防守</small></div><span class="local-badge">本机选杆</span>';panel.append(summary);
+    const skillLabels={club:'俱乐部',strong:'高手',expert:'专家'},styleLabels={balanced:'综合判断',attacking:'偏重进攻',defensive:'偏重防守'};
+    const descriptions={club:'更宽的击球误差',strong:'适中的击球误差',expert:'更小的击球误差',balanced:'综合比较收益与风险',attacking:'更愿意冒险争取得分',defensive:'更重视失误后的机会'};
+    const current=document.createElement('div');current.className='current-setting';current.setAttribute('aria-live','polite');
     const refresh=()=>{
-      const selected=opponentMode(s);current.textContent=`当前：${selected.label} · ${skillLabels[s.aiSettings.skill]} · ${styleLabels[s.aiSettings.style]}`;
-      for(const b of modes.children){const checked=b.dataset.mode===selected.id;b.setAttribute('aria-pressed',String(checked));b.querySelector('.selected-label').textContent=checked?'已选':'';}
-      for(const b of panel.querySelectorAll('[data-setting]')){b.setAttribute('aria-pressed',String(s.aiSettings[b.dataset.setting]===b.dataset.value));}
-      behaviorHelp.textContent='准度决定击球误差；打法决定进攻与防守的取舍。';
-      styleHelp.textContent=({balanced:'均衡：在收益与风险之间折中。',attacking:'连续进攻：更愿意承担风险，争取连续得分。',defensive:'控制防守：更重视失误代价，避免给对手留下机会。'}[s.aiSettings.style]);
+      current.textContent='当前设置：'+skillLabels[s.aiSettings.skill]+' · '+styleLabels[s.aiSettings.style];
+      for(const b of panel.querySelectorAll('[data-setting]'))b.setAttribute('aria-pressed',String(s.aiSettings[b.dataset.setting]===b.dataset.value));
       render(s);
     };
-    for(const mode of OPPONENT_MODES){
-      const b=document.createElement('button');b.type='button';b.className='mode-option';b.dataset.mode=mode.id;
-      const name=document.createElement('span');name.className='mode-name';name.textContent=mode.label;
-      const selected=document.createElement('span');selected.className='selected-label';name.append(selected);
-      const use=document.createElement('span');use.className='mode-use';use.textContent=mode.use;
-      const description=document.createElement('small');description.textContent=mode.description;name.append(use,selected);b.append(name,description);
-      b.onclick=async()=>{
-        const before={...s.aiSettings};for(const button of panel.querySelectorAll('button'))button.disabled=true;
-        errorText.textContent=mode.engine==='deepseek'?'正在连接本地 DS 服务…':'';
-        s.aiSettings.engine=mode.engine;s.aiSettings.thinking=mode.thinking;
-        try{await enableDeepSeek(s,true);recordEvent(s,'settings',{...s.aiSettings});errorText.textContent='';}
-        catch(error){Object.assign(s.aiSettings,before);errorText.textContent=/配置|密钥/.test(error.message)?'DS 尚未配置。请先在本地服务中配置密钥，再选择此模式。':'暂时无法连接 DS。请启动本地服务后重试，当前模式保持不变。';}
-        finally{for(const button of panel.querySelectorAll('button'))button.disabled=false;refresh();}
-      };modes.append(b);
-    }
-    const behavior=document.createElement('div');behavior.className='setting-section';behavior.innerHTML='<h3>击球表现</h3>';
-    const behaviorHelp=document.createElement('p');behavior.append(behaviorHelp);
-    for(const [key,label,values] of [['skill','准度',skillLabels],['style','打法',styleLabels]]){
-      const row=document.createElement('div');row.className='setting-row';const caption=document.createElement('span');caption.textContent=label;
-      const group=document.createElement('div');group.className='choices';group.setAttribute('role','group');group.setAttribute('aria-label',label);
+    for(const [key,label,caption,values] of [['skill','击球准度','只改变执行误差',skillLabels],['style','战术倾向','同一套搜索，不同取舍',styleLabels]]){
+      const section=document.createElement('section');section.className='setting-section';
+      const heading=document.createElement('div');heading.className='section-heading';heading.innerHTML='<h3>'+label+'</h3><span>'+caption+'</span>';
+      const group=document.createElement('div');group.className='setting-options';group.setAttribute('role','group');group.setAttribute('aria-label',label);
       for(const [value,text] of Object.entries(values)){
-        const b=document.createElement('button');b.type='button';b.textContent=text;b.dataset.setting=key;b.dataset.value=value;
-        b.onclick=()=>{s.aiSettings[key]=value;s.turnManager?.cancel();s.opponent?.reset();s.preparedShot=null;s.aiPreparedMark=null;if(!s.shot)restartAI(s);recordEvent(s,'settings',{...s.aiSettings});refresh();};group.append(b);
-      }row.append(caption,group);behavior.append(row);
+        const b=document.createElement('button');b.type='button';b.className='setting-option';b.dataset.setting=key;b.dataset.value=value;
+        b.innerHTML='<strong>'+text+'</strong><small>'+descriptions[value]+'</small>';
+        b.onclick=()=>{if(s.aiSettings[key]===value)return;s.aiSettings[key]=value;s.turnManager?.cancel();s.opponent?.reset();s.preparedShot=null;s.aiPreparedMark=null;if(!s.shot)restartAI(s);recordEvent(s,'settings',{...s.aiSettings});refresh();};group.append(b);
+      }section.append(heading,group);panel.append(section);
     }
-    const styleHelp=document.createElement('p');styleHelp.className='note';behavior.append(styleHelp);panel.append(behavior,errorText);
-    const note=document.createElement('div');note.className='note';note.textContent='可在对局中切换准度与打法，新设置用于后续选杆。本页有效，每杆最多用时 90 秒。';panel.append(note);
-    const footer=document.createElement('div');footer.className='settings-footer';footer.style.gap='9px';
-    if(fromHome){const back=document.createElement('button');back.type='button';back.textContent='返回首页';back.onclick=()=>closeModal(s);footer.append(back);}
-    const done=document.createElement('button');done.type='button';done.className='primary';done.textContent=fromHome?'完成，开始对局':'完成，继续对局';done.onclick=()=>{closeModal(s);if(fromHome)startEnhancedGame(s);};footer.append(done);panel.append(footer);
-    refresh();modes.querySelector('[aria-pressed="true"]')?.focus();
+    panel.append(current);
+    const note=document.createElement('div');note.className='note';note.textContent=fromHome?'默认高手准度与综合判断。对局中也可以调整。':'设置用于后续选杆，已经击出的球不受影响。';panel.append(note);
+    const footer=document.createElement('div');footer.className='settings-footer';
+    const back=document.createElement('button');back.type='button';back.textContent=fromHome?'返回':'关闭设置';back.onclick=()=>closeModal(s);footer.append(back);
+    const done=document.createElement('button');done.type='button';done.className='primary';done.textContent=fromHome?'开始对局 →':'继续对局';done.onclick=()=>{closeModal(s);if(fromHome)startEnhancedGame(s);};footer.append(done);panel.append(footer);
+    refresh();done.focus();
   }
   function showRecording(s) {
     const r=s.recorder.getStatus();
-    const hint=!r.enabled?'比赛记录已暂停，思考文本也不会保存。重新开启后按当前设置继续记录。':opponentMode(s).id==='thinking'?'当前使用 DS 思考选杆；开启思考文本保存后，将完整记录 DS 实际返回的内容。':'当前模式通常不会产生 DS 思考文本。要分析模型，请在对手设置中选择 DS 思考选杆。';
-    const panel=dialog(s,'开发比赛记录',`比赛记录${r.enabled?'已开启':'已暂停'}。本页已保存 ${r.saved} 条，等待保存 ${r.pending} 条，未保存 ${r.dropped} 条。${r.error?'请启动本地记录服务后重试保存。':''} ${hint}`,[
-      [r.enabled?'暂停比赛记录':'开启比赛记录',()=>{s.recorder.setEnabled(!r.enabled);showRecording(s);}],
-      [r.thinking?'思考文本：完整保存':'思考文本：不保存',()=>{s.recorder.setThinking(!r.thinking);showRecording(s);}],
-      ['重试保存',async()=>{await s.recorder.flush();if(panel.isConnected)showRecording(s);}],['完成',()=>closeModal(s),true]
-    ],'记录保存在本机 .local/matches，总空间上限 1 GiB。DS 思考文本不做字数截断；只有模型实际返回时才有内容。记录功能可在正式发布时移除。');
-    panel.querySelectorAll('.choices button')[1].setAttribute('aria-pressed',String(r.thinking));
+    const message=!r.enabled?'自动记录已暂停。':r.error?'记录尚未写入磁盘，请启动本地记录服务后重试。':'自动记录球局、选杆与结果，供赛后复盘。';
+    const panel=dialog(s,'比赛记录',message,[]);panel.querySelector('.choices').remove();dismissiblePanel(s,panel);
+    const grid=document.createElement('div');grid.className='record-grid';
+    for(const [label,value] of [['已保存',r.saved],['待保存',r.pending],['未保存',r.dropped]]){const stat=document.createElement('div');stat.className='record-stat';stat.innerHTML='<strong>'+value+'</strong><span>'+label+'</span>';grid.append(stat);}panel.append(grid);
+    const note=document.createElement('div');note.className='note';note.textContent='记录留在本机。无需逐杆标注；有疑问时可用“标记上一杆”，保留该杆现场。';panel.append(note);
+    const footer=document.createElement('div');footer.className='settings-footer';
+    const toggle=document.createElement('button');toggle.type='button';toggle.textContent=r.enabled?'暂停记录':'开启记录';toggle.setAttribute('aria-pressed',String(r.enabled));toggle.onclick=()=>{s.recorder.setEnabled(!r.enabled);showRecording(s);};footer.append(toggle);
+    const retry=document.createElement('button');retry.type='button';retry.textContent='重试保存';retry.disabled=!r.pending&&!r.error;retry.onclick=async()=>{retry.disabled=true;await s.recorder.flush();if(panel.isConnected)showRecording(s);};footer.append(retry);
+    const done=document.createElement('button');done.type='button';done.className='primary';done.textContent='完成';done.onclick=()=>closeModal(s);footer.append(done);panel.append(footer);done.focus();
   }
   function resetTurn(s) { s.turnManager?.cancel();s.aiPreparedMark=null;s.preparedShot=null;s.nominatedColour = null; s.nominationSource = null; s.freeBallNominee = null; s.freeBallAvailable = false; s.freeBallReview = false; s.freeBallDeclined = false; s.aiTarget = null; }
   function updateFreeBall(s, result) {
@@ -4142,7 +4122,7 @@ const PCOLArena = (() => {
     s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;s.refHooks=new WeakSet();s.deliveryHooks=new WeakSet();
     hookColourRespots(s);
     API.app = app;
-    let trial = null, search = null, deepSeek = null;
+    let trial = null, search = null, localAI = null;
     s.aiSettings={skill:'strong',style:'balanced',engine:'local',thinking:false};s.requestedEnhanced=false;
     s.recorder=DEVELOPMENT?PCOLMatchRecorder.create({version:VERSION,onChange:()=>{if(s.host)render(s);}}):null;
     const getTrial = () => trial || (trial = PCOLTrial.create({game:g,factories:require.m,
@@ -4182,14 +4162,15 @@ const PCOLArena = (() => {
     const getSearch = () => search || (search = makeSearch());
     API.search = {run:options=>getSearch().run(options),cancel:()=>search?.cancel(),
       getStatus:()=>search?.getStatus() || {busy:false,lastResult:null}};
-    if(DEVELOPMENT)API.bench=PCOLBench.create({version:VERSION,getTrial,makeSearch,getState:getSearchState,skill:PCOLShotSkill,createClient:PCOLDeepSeek.create,
+    const localTools=DEVELOPMENT && ['127.0.0.1','localhost'].includes(window.location.hostname);
+    if(localTools)API.bench=PCOLBench.create({version:VERSION,getTrial,makeSearch,getState:getSearchState,skill:PCOLShotSkill,createClient:PCOLDeepSeek.create,
       capture:()=>{const snapshot=getTrial().snapshot();return {snapshot,state:getSearchState(snapshot)};}});
-    if(DEVELOPMENT)API.arena=PCOLArena.create({version:VERSION,build:BUILD_ID,getTrial,makeSearch,getState:getSearchState,
+    if(localTools)API.arena=PCOLArena.create({version:VERSION,build:BUILD_ID,getTrial,makeSearch,getState:getSearchState,
       capture:()=>({snapshot:getTrial().snapshot()}),skill:PCOLShotSkill,core:PCOLCore,geometry:PCOLSearchGeometry,policy:PCOLTacticalPolicy,
       turnOptions:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),
       createRecorder:PCOLMatchRecorder.create,createClient:PCOLDeepSeek.create,createTurnManager:PCOLTurnManager.create});
-    s.getDeepSeek = () => deepSeek || (deepSeek = PCOLDeepSeek.create({getSearch,getTrial,onChange:()=>render(s),
-      getSettings:()=>s.aiSettings,getLogContext:()=>s.recorder&&({...s.recorder.context(),turnId:s.currentTurnId,decisionId:s.currentDecisionId}),
+    s.getLocalAI = () => localAI || (localAI = PCOLDeepSeek.create({getSearch,getTrial,onChange:()=>render(s),
+      getSettings:()=>({...s.aiSettings,engine:'local',thinking:false}),getLogContext:()=>s.recorder&&({...s.recorder.context(),turnId:s.currentTurnId,decisionId:s.currentDecisionId}),
       onEvent:(kind,data)=>recordEvent(s,kind,data),
       getContext:()=>({ballOn:m._gContext.ballOn,playerIndex:m._gContext.playerIndex,nRounds:m._gContext.nRounds,scores:scores(m),
         nominatedColour:s.nominatedColour,freeBall:{available:s.freeBallAvailable,nominee:s.freeBallNominee},
@@ -4197,7 +4178,7 @@ const PCOLArena = (() => {
         remainingPoints:PCOLCore.remainingPoints(balls(g),m._gContext.ballOn),breakScore:m._players[m._gContext.playerIndex]?.brk||0,
         balls:balls(g).filter(b=>b.active).map(b=>({i:b.i,n:b.n,x:b.x,z:b.z}))})}));
     s.getOpponent = () => s.opponent || (s.opponent = PCOLDeepSeekOpponent.create({game:g,
-      decide:()=>{if(s.preparedShot){const ready=s.preparedShot;s.preparedShot=null;return Promise.resolve(ready);}beginDecision(s);return s.getDeepSeek().decide({forceModel:DEVELOPMENT&&s.aiSettings.thinking});},getSnapshot:()=>getTrial().snapshot(),cancelDecision:()=>deepSeek?.cancel(),
+      decide:()=>{if(s.preparedShot){const ready=s.preparedShot;s.preparedShot=null;return Promise.resolve(ready);}beginDecision(s);return s.getLocalAI().decide();},getSnapshot:()=>getTrial().snapshot(),cancelDecision:()=>localAI?.cancel(),
       prepareCandidate:candidate=>{
         const shot=PCOLShotSkill.perturb(candidate.shot,candidate.skill);
         const compiled=getTrial().compile(shot);
@@ -4210,10 +4191,10 @@ const PCOLArena = (() => {
       },
       canThink:()=>app._currentController===g && m._gState===4 && !g._paused && !s.modal && !s.pending && !s.conceded && !s.hotseat && !s.turnManager?.getStatus().busy &&
         m._gContext.playerIndex!==g._fpc.gPlayerIndex && !sim.getBalls().some(b=>b.active&&!b.asleep),
-      onChange:()=>render(s),onError:error=>deepSeekError(s,error)}));
+      onChange:()=>render(s),onError:error=>localAIError(s,error)}));
     s.turnManager=PCOLTurnManager.create({getState:()=>getSearchState(getTrial().snapshot()),getPending:()=>s.pending,getTrial,
       options:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),geometry:PCOLSearchGeometry,
-      policy:PCOLTacticalPolicy,skill:PCOLShotSkill,choose:request=>s.getDeepSeek().chooseTurn({...request,forceModel:DEVELOPMENT&&s.aiSettings.thinking}),
+      policy:PCOLTacticalPolicy,skill:PCOLShotSkill,choose:request=>s.getLocalAI().chooseTurn(request),
       onEvent:(kind,data)=>recordEvent(s,kind,data),
       commit:(choice,kind,reason,source)=>{
         if(kind==='foul'){recordEvent(s,'turn.choice',{kind,choiceId:choice.id,action:choice.action,reason,source});s.log.push({kind:'ai-foul-choice',action:choice.action,reason});resolveFoul(s,choice.action);return;}
@@ -4230,7 +4211,7 @@ const PCOLArena = (() => {
         recordEvent(s,'turn.choice',{kind,choiceId:choice.id,position:choice.position,nominee:choice.nominee,reason,source});
         s.log.push({kind:'ai-turn-choice',decision:kind,position:choice.position,freeBallNominee:s.freeBallNominee,reason});
         restartAI(s);
-      },onError:error=>deepSeekError(s,error),onChange:()=>render(s)});
+      },onError:error=>localAIError(s,error),onChange:()=>render(s)});
     s.ensureAITurn=()=>{
       if(!s.opponent?.getStatus().enabled||s.hotseat||app._currentController!==g||m._gState!==4||g._paused||s.modal||s.shot||s.conceded||m._gContext.playerIndex===g._fpc.gPlayerIndex)return false;
       if(s.turnManager.getStatus().busy||s.turnManager.getStatus().failed)return true;
@@ -4247,13 +4228,13 @@ const PCOLArena = (() => {
         (currentTouching(s).requiresColourDeclaration&&s.nominationSource!=='manual');
       if(needs){beginDecision(s,'turn');s.turnManager.run();return true;}return false;
     };
-    API.deepseek={setEnabled:enabled=>enableDeepSeek(s,enabled),decide:options=>s.getDeepSeek().decide(options),
-      cancel:()=>{s.turnManager.cancel();s.opponent?.reset();deepSeek?.cancel();},status:()=>s.getDeepSeek().status(),
-      getStatus:()=>({...(deepSeek?.getStatus()||{busy:false,phase:'idle'}),turn:s.turnManager.getStatus(),settings:{...s.aiSettings},opponent:s.opponent?.getStatus()||{enabled:false}})};
+    API.ai={setEnabled:enabled=>enableLocalAI(s,enabled),decide:options=>s.getLocalAI().decide(options),
+      cancel:()=>{s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();},
+      getStatus:()=>({...(localAI?.getStatus()||{busy:false,phase:'idle'}),turn:s.turnManager.getStatus(),settings:{...s.aiSettings},opponent:s.opponent?.getStatus()||{enabled:false}})};
     if(DEVELOPMENT)API.recording={getStatus:()=>s.recorder.getStatus(),setEnabled:v=>s.recorder.setEnabled(v),
       setThinking:v=>s.recorder.setThinking(v),flush:()=>s.recorder.flush(),mark:label=>markStroke(s,label)};
     s.getOpponent().setEnabled(false);
-    patches.push(() => {API.arena?.cancel();endRecordFrame(s,'uninstalled');s.recorder?.flush();s.turnManager.cancel();s.opponent?.reset();deepSeek?.cancel();search?.cancel();trial?.dispose();});
+    patches.push(() => {API.arena?.cancel();endRecordFrame(s,'uninstalled');s.recorder?.flush();s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();search?.cancel();trial?.dispose();});
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
     wrap(g, '_activateSubControl', original => function (...args) {
@@ -4267,7 +4248,7 @@ const PCOLArena = (() => {
       if(s.placement){g._gView.syncBalls(sim.getBalls(),sim.evolution);g._gView.requireRender();return;}
       return original.apply(this,args);
     });
-    wrap(g,'exit',original=>function(...args){API.arena?.cancel();endRecordFrame(s,'exited');s.turnManager.cancel();s.opponent?.reset();deepSeek?.cancel();if(s.placement)finishPracticeEditor(s,false);destroyPracticePanel(s);return original.apply(this,args);});
+    wrap(g,'exit',original=>function(...args){API.arena?.cancel();endRecordFrame(s,'exited');s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();if(s.placement)finishPracticeEditor(s,false);destroyPracticePanel(s);return original.apply(this,args);});
     wrap(g._fpc,'gotoState1',original=>function(...args){
       if(s.practice==='custom'){if(s.placement)finishPracticeEditor(s,true);s.practiceControlsHidden=true;render(s);}
       return original.apply(this,args);
@@ -4305,7 +4286,7 @@ const PCOLArena = (() => {
     });
     wrap(m, 'asyncLaunch', original => function (ready) {
       endRecordFrame(s,'restarted');
-      deepSeek?.clearPlan();s.lastResult=null;s.lastBefore=null;s.aiConcessionMark=null;
+      localAI?.clearPlan();s.lastResult=null;s.lastBefore=null;s.aiConcessionMark=null;
       s.hotseat = s.requestedHotseat;
       s.requestedHotseat = false;
       s.getOpponent().setEnabled(s.requestedEnhanced);s.requestedEnhanced=false;
@@ -4416,7 +4397,7 @@ const PCOLArena = (() => {
     });
     wrap(m, '_onResetResponse', original => function (...args) {
       endRecordFrame(s,'restarted');
-      s.opponent?.reset();deepSeek?.cancel();deepSeek?.clearPlan();
+      s.opponent?.reset();localAI?.cancel();localAI?.clearPlan();
       if(s.placement)finishPracticeEditor(s,false);
       s.practiceControlsHidden=false;
       s.celebration.clear();
