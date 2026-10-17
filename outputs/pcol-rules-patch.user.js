@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.16.1
+// @version      0.16.2
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -3344,7 +3344,7 @@ const PCOLDecisionClient=(()=>{
  * no additional animation loop, performance marks, screenshots or disk writes. */
 const PCOLFrameMonitor = (() => {
   const THRESHOLD_MS=50,PAUSE_MS=2000,SAMPLE_LIMIT=32,PHASE_LIMIT=12,LOAF_LIMIT=8;
-  const PHASES=['idle','ai','turn','realshot'];
+  const PHASES=['idle','ai','turn','realshot','stroke-end'];
   const phaseName=value=>PHASES.includes(value?.phase||value)?value?.phase||value:'idle';
   const finite=value=>Number.isFinite(value)?value:null;
   const text=(value,length=120)=>typeof value==='string'?value.slice(0,length):'';
@@ -3352,10 +3352,10 @@ const PCOLFrameMonitor = (() => {
     const doc=win?.document,now=()=>win?.performance?.now?.()??Date.now();
     let disposed=false,last=null,phase='idle',lastPhase='idle',observer=null,supported=false,visibleSince=now();
     let frames,slowFrames,totalGapMs,maxGapMs,dropped,pauses,maxPauseMs,phaseCounts,samples,loafCount,loafDropped,loafs;
-    let phases=[];
+    let phases=[],strokeEnds=[],strokeEndDropped=0,pendingStroke=false;
     function clear() {
       frames=slowFrames=totalGapMs=maxGapMs=dropped=pauses=maxPauseMs=loafCount=loafDropped=0;
-      phaseCounts={idle:0,ai:0,turn:0,realshot:0};samples=[];loafs=[];
+      phaseCounts={idle:0,ai:0,turn:0,realshot:0,'stroke-end':0};samples=[];loafs=[];
     }
     function setPhase(value,time=now()) {
       if(disposed)return;
@@ -3374,7 +3374,7 @@ const PCOLFrameMonitor = (() => {
       if(doc?.hidden)pauses++;
       resetBaseline();
     }
-    function tick(time=now()) {
+    function sampleTick(time) {
       if(disposed||!Number.isFinite(time))return;
       updatePhase(time);
       if(doc?.hidden){last=null;return;}
@@ -3390,6 +3390,22 @@ const PCOLFrameMonitor = (() => {
         recentPhases:phases.filter(item=>item.at>=start&&item.at<=time).slice(-4)};
       if(samples.length===SAMPLE_LIMIT){samples.shift();dropped++;}
       samples.push(sample);
+    }
+    function tick(time=now()) {
+      sampleTick(time);
+      // Include the complete interval across judgement, log creation and the
+      // return to the game loop. No second animation loop or timer is needed.
+      if(pendingStroke&&!disposed){pendingStroke=false;drain('stroke');}
+    }
+    function beginStrokeEnd(context={}) {
+      const started=now();setPhase('stroke-end',started);
+      return ()=>{
+        if(disposed)return;
+        const ended=now();
+        if(strokeEnds.length===8){strokeEnds.shift();strokeEndDropped++;}
+        strokeEnds.push({at:started,durationMs:ended-started,...context});
+        updatePhase(ended);pendingStroke=true;
+      };
     }
     function collect(entries) {
       if(disposed||doc?.hidden)return;
@@ -3409,18 +3425,21 @@ const PCOLFrameMonitor = (() => {
     function drain(reason='stroke') {
       if(disposed)return null;
       if(observer)try{collect(observer.takeRecords());}catch(_){}
-      if(!frames&&!pauses&&!loafCount)return null;
-      const report={reason:text(reason,40),thresholdMs:THRESHOLD_MS,pauseThresholdMs:PAUSE_MS,
+      if(!frames&&!pauses&&!loafCount&&!strokeEnds.length)return null;
+      const report={reason:text(reason,40),at:now(),timeOrigin:finite(win?.performance?.timeOrigin),thresholdMs:THRESHOLD_MS,pauseThresholdMs:PAUSE_MS,
         frames,slowFrames,meanGapMs:frames?totalGapMs/frames:0,maxGapMs,phaseCounts,samples,dropped,pauses,maxPauseMs,
+        strokeEnds,strokeEndDropped,
         longAnimationFrames:{supported,scope:'document-main-thread-only',count:loafCount,samples:loafs,dropped:loafDropped}};
-      clear();resetBaseline();
+      // A report is not a pause: retain last tick, phase history and visibility
+      // cutoff, including LoAF entries delivered just after this drain.
+      clear();strokeEnds=[];strokeEndDropped=0;
       try{onReport(report);}catch(_){}
       return report;
     }
     function dispose() {
       if(disposed)return;
       disposed=true;observer?.disconnect();doc?.removeEventListener?.('visibilitychange',visibilityChanged);
-      last=null;phases=[];clear();
+      last=null;phases=[];strokeEnds=[];pendingStroke=false;clear();
     }
     clear();updatePhase(visibleSince);setPhase(phase,visibleSince);
     doc?.addEventListener?.('visibilitychange',visibilityChanged);
@@ -3431,7 +3450,7 @@ const PCOLFrameMonitor = (() => {
       observer=new Observer(list=>collect(list.getEntries()));
       observer.observe({type:'long-animation-frame',buffered:false});supported=true;
     }catch(_){observer?.disconnect();observer=null;}
-    return {tick,setPhase,drain,dispose};
+    return {tick,setPhase,beginStrokeEnd,drain,dispose};
   }
   return {create};
 })();
@@ -3576,11 +3595,26 @@ const PCOLMatchRecorder = (() => {
       })
     };
   }
-  function create({version='',source='browser',onChange=()=>{},isBusy=()=>false,fetchImpl=localFetch,store=createStore()}={}) {
+  function create({version='',source='browser',onChange=()=>{},isBusy=()=>false,fetchImpl=localFetch,store=createStore(),now=()=>performance.now()}={}) {
     let enabled=true,frameId=null,sequence=0,lastStroke=null,disposed=false,writing=null,syncing=null,error=null,syncError=null,saved=0,pending=0,failed=0;
     let queuedBytes=0,retryTimer=null,retryAt=0,retryDelay=5000,notifyTimer=null,lastNotice=null,lastNoticeAt=0;
     const SYNC_BATCH=8,SYNC_INTERVAL=1500,NOTICE_INTERVAL=250;
     const writes=[],session=Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);
+    let timings={},slowSamples=[],timingDropped=0,performanceReport=null;
+    function timing(stage,at,durationMs,detail={}) {
+      const total=timings[stage]||(timings[stage]={count:0,totalMs:0,maxMs:0,failed:0,totalCallMs:0,maxCallMs:0});
+      total.count++;total.totalMs+=durationMs;total.maxMs=Math.max(total.maxMs,durationMs);
+      total.failed+=detail.ok===false?1:0;
+      if(detail.callMs!=null){total.totalCallMs+=detail.callMs;total.maxCallMs=Math.max(total.maxCallMs,detail.callMs);}
+      if(durationMs<16)return;
+      if(slowSamples.length===16){slowSamples.shift();timingDropped++;}
+      slowSamples.push({stage,at,durationMs,...detail});
+    }
+    async function timed(stage,work,detail) {
+      const at=now();let callMs=0,ok=false;
+      try{const result=work();callMs=now()-at;const value=await result;ok=true;return value;}
+      finally{timing(stage,at,now()-at,{...detail,callMs,ok});}
+    }
     const getStatus=()=>({enabled,frameId,session,saved,localSaved:saved,pending,saving:writes.length,failed,error,syncError,status:error?'error':writes.length?'saving':'saved'});
     function sendNotice() {
       notifyTimer=null;if(disposed)return;
@@ -3595,7 +3629,7 @@ const PCOLMatchRecorder = (() => {
       }
       if(!notifyTimer){notifyTimer=setTimeout(sendNotice,Math.max(0,NOTICE_INTERVAL-(Date.now()-lastNoticeAt)));notifyTimer.unref?.();}
     }
-    const entryFor=(kind,data,correlation={})=>({schema:1,id:session+'_'+(++sequence),session,seq:sequence,source,frameId,at:new Date().toISOString(),kind,data,
+    const entryFor=(kind,data,correlation={},targetFrame=frameId)=>({schema:1,id:session+'_'+(++sequence),session,seq:sequence,source,frameId:targetFrame,at:new Date().toISOString(),kind,data,
       ...Object.fromEntries(['turnId','decisionId','requestId','strokeId'].filter(key=>correlation[key]!=null).map(key=>[key,String(correlation[key])]))});
     const ready=store.stats().then(stats=>{saved=stats.saved;pending=stats.pending;notify();scheduleSync();return getStatus();},()=>{error='storage_unavailable';notify();return getStatus();});
     function scheduleSync() {
@@ -3609,7 +3643,11 @@ const PCOLMatchRecorder = (() => {
         await ready;
         while(writes.length){
           const batch=writes.slice(0,40);
-          try{await store.append(batch);writes.splice(0,batch.length);queuedBytes-=batch.reduce((n,row)=>n+row.raw.length,0);saved+=batch.length;pending+=batch.length;error=failed?'record_failed':null;notify();scheduleSync();}
+          const measured=batch.find(row=>!row.diagnostic),detail={firstId:batch[0].id,lastId:batch.at(-1).id,events:batch.length};
+          if(measured)timing('queue-oldest',measured.queuedAt,now()-measured.queuedAt,detail);
+          try{
+            if(measured)await timed('append',()=>store.append(batch),detail);else await store.append(batch);
+            writes.splice(0,batch.length);queuedBytes-=batch.reduce((n,row)=>n+row.raw.length,0);saved+=batch.length;pending+=batch.length;error=failed?'record_failed':null;notify();scheduleSync();}
           catch(_){error='storage_failed';notify();break;}
         }
         return getStatus();
@@ -3628,8 +3666,11 @@ const PCOLMatchRecorder = (() => {
             try{
               for(const row of batch){
                 if(disposed||(!force&&(!enabled||isBusy())))break;
-                const response=await fetchImpl('http://127.0.0.1:18763/record',{method:'POST',headers:{'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'},body:row.raw});
-                if(!response.ok){let code='record_failed';try{const body=await response.json();if(ERROR_CODES.has(body.error))code=body.error;}catch(_){}throw new Error(code);}
+                const response=await timed('upload',async()=>{
+                  const response=await fetchImpl('http://127.0.0.1:18763/record',{method:'POST',headers:{'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'},body:row.raw});
+                  if(!response.ok){let code='record_failed';try{const body=await response.json();if(ERROR_CODES.has(body.error))code=body.error;}catch(_){}throw new Error(code);}
+                  return response;
+                },{firstId:row.id,lastId:row.id,events:1});
                 accepted.push(row.key);
               }
             }finally{
@@ -3645,14 +3686,34 @@ const PCOLMatchRecorder = (() => {
       })().finally(()=>{syncing=null;scheduleSync();});
       return syncing;
     }
-    function event(kind,data={},correlation={}) {
-      if(!enabled||!frameId||disposed)return null;
-      const entry=entryFor(kind,data,correlation),compact=['decision.start','stroke.end'].includes(kind);
-      let raw;try{raw=JSON.stringify(entry,compact?(key,value)=>key==='serial'?undefined:value:undefined);}catch(_){failed++;error='serialization';notify();return null;}
+    function event(kind,data={},correlation={},targetFrame=frameId) {
+      if(!enabled||!targetFrame||disposed)return null;
+      const entry=entryFor(kind,data,correlation,targetFrame),compact=['decision.start','stroke.end'].includes(kind),diagnostic=kind==='performance.recording',at=now();
+      let raw,serialized=false;
+      try{raw=JSON.stringify(entry,compact?(key,value)=>key==='serial'?undefined:value:undefined);serialized=true;}
+      catch(_){failed++;error='serialization';notify();return null;}
+      finally{if(!diagnostic)timing('serialize',at,now()-at,{firstId:entry.id,lastId:entry.id,kind,ok:serialized});}
       // Bound only writes not yet committed, never the durable event history.
       if(writes.length>=4096||queuedBytes+raw.length>8*1024*1024){failed++;error='storage_busy';notify();return null;}
-      writes.push({id:entry.id,raw});queuedBytes+=raw.length;if(kind==='stroke.end')lastStroke=entry.id;
+      writes.push({id:entry.id,raw,diagnostic,queuedAt:now()});queuedBytes+=raw.length;if(kind==='stroke.end')lastStroke=entry.id;
       notify();if(!['storage_failed','storage_unavailable'].includes(error)||writing)void persist();return entry.id;
+    }
+    function reportPerformance(correlation={}) {
+      if(disposed||!enabled||!frameId)return Promise.resolve();
+      if(performanceReport)return performanceReport;
+      const targetFrame=frameId;
+      performanceReport=(async()=>{
+        // Wait off the game loop for the current durable writes, including the
+        // last stroke. The diagnostic row never schedules another report.
+        await persist();
+        if(disposed||!Object.keys(timings).length)return;
+        const data={at:now(),timeOrigin:globalThis.performance?.timeOrigin??null,
+          scope:'since-previous-report',asyncStages:['append','upload'],slowThresholdMs:16,
+          timings,samples:slowSamples,dropped:timingDropped};
+        timings={};slowSamples=[];timingDropped=0;
+        event('performance.recording',data,correlation,targetFrame);
+      })().finally(()=>{performanceReport=null;});
+      return performanceReport;
     }
     async function readPage(options){await persist();return store.readPage(options);}
     async function exportJSONL() {
@@ -3666,7 +3727,7 @@ const PCOLMatchRecorder = (() => {
       return {saved,bytes:blob.size};
     }
     return {startFrame(meta={}){frameId=session+'_'+(++sequence);lastStroke=null;event('frame.start',{version,...meta});return frameId;},
-      event,endFrame(summary={}){return event('frame.end',summary);},mark(label,extra={}){return event('mark',{label,strokeId:lastStroke,...extra},{strokeId:lastStroke});},
+      event,reportPerformance,endFrame(summary={}){return event('frame.end',summary);},mark(label,extra={}){return event('mark',{label,strokeId:lastStroke,...extra},{strokeId:lastStroke});},
       context:()=>({frameId,session,enabled}),setEnabled(value){enabled=!!value;notify(true);if(!enabled&&retryTimer){clearTimeout(retryTimer);retryTimer=null;}else scheduleSync();},getStatus,ready,readPage,exportJSONL,download,
       async flush(){await persist();if(syncing)await syncing;return sync(true);},
       dispose(){disposed=true;if(retryTimer){clearTimeout(retryTimer);retryTimer=null;}if(notifyTimer){clearTimeout(notifyTimer);notifyTimer=null;}return persist();}};
@@ -3922,9 +3983,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.16.1";
+  const VERSION = "0.16.2";
   const DEVELOPMENT = true;
-  const BUILD_ID = "78227d2c6143";
+  const BUILD_ID = "c7245e31bd41";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -4518,7 +4579,6 @@ const PCOLArena = (() => {
     syncResponse(s);
   }
   function recordCompletedStroke(s, shot, result) {
-    s.frameMonitor?.drain('stroke');
     if(shot.localAI)s.recordAIOutcome?.(result);
     s.lastTrace=shot.trace;s.lastContacts=shot.contacts;s.lastBefore=shot.before;s.lastResult=result;
     if (s.practice) s.practiceBefore=shot.before;
@@ -4543,6 +4603,8 @@ const PCOLArena = (() => {
     s.shot=null;resetTurn(s);
   }
   function finishFreePractice(s) {
+    const measured=s.frameMonitor?.beginStrokeEnd({turnId:s.currentTurnId,decisionId:s.currentDecisionId,strokeId:s.shot?.recordId});
+    try {
     const m=s.g._model,sim=s.g._simulator,shot=s.shot;
     shot.physical=false;
     const pottedCount=sim.result.pottedIndices.filter(i=>sim.getBallAtIndex(i).number>0).length;
@@ -4553,6 +4615,7 @@ const PCOLArena = (() => {
     recordCompletedStroke(s,shot,{score:0,foulCode:0,pottedCount});
     syncResponse(s,m._refResult);
     return m;
+    } finally { measured?.(); }
   }
   function sample(s) {
     const shot = s.shot;
@@ -4846,6 +4909,8 @@ const PCOLArena = (() => {
       p.reviewMiss ? '本杆处于遮挡局面，是否已尽力解球需要裁判判断；“裁判确认”是人工判罚，不是自动检测结果。' : p.miss ? '复位恢复本杆前整桌球形；已经判给你的罚分保留。' : '现位置重打保留当前球形。');
   }
   function finishStroke(s, jumpDecision) {
+    const measured=s.frameMonitor?.beginStrokeEnd({turnId:s.currentTurnId,decisionId:s.currentDecisionId,strokeId:s.shot?.recordId});
+    try {
     const g = s.g, m = g._model, sim = g._simulator, shot = s.shot;
     if (!shot) throw new Error('No pre-stroke snapshot');
     sample(s);
@@ -4912,6 +4977,7 @@ const PCOLArena = (() => {
     } else { syncResponse(s, judgement); offerConcession(s, offender); }
     requestRender(s);
     return m;
+    } finally { measured?.(); }
   }
   function attach(app, require) {
     if (active?.app === app) return active;
@@ -5029,7 +5095,11 @@ const PCOLArena = (() => {
       }),onError:error=>localAIError(s,error),onChange:()=>requestRender(s)});
     s.frameMonitor=PCOLFrameMonitor.create({window,getPhase:()=>s.shot?.physical?'realshot':
       s.turnManager.isBusy()?'turn':localAI?.isBusy()?'ai':'idle',
-      onReport:report=>recordEvent(s,'performance.frame',report)});
+      onReport:report=>{
+        const tail=report.strokeEnds.at(-1),correlation=tail?{turnId:tail.turnId,decisionId:tail.decisionId,strokeId:tail.strokeId}:{};
+        recordEvent(s,'performance.frame',report,correlation);
+        void s.recorder?.reportPerformance(correlation);
+      }});
     if(API.codexHost)API.codexHost.getDecisionClient=()=>s.getLocalAI();
     s.ensureAITurn=()=>{
       if(!s.opponent?.getStatus().enabled||s.hotseat||app._currentController!==g||m._gState!==4||!thinkingAllowed(s)||s.shot||s.conceded||s.frameEnd||m._gContext.playerIndex===g._fpc.gPlayerIndex)return false;
