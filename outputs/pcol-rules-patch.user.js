@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.14.1
+// @version      0.15.0
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -15,6 +15,7 @@
 // ==/UserScript==
 (() => {
 const window = typeof unsafeWindow === "undefined" ? globalThis.window : unsafeWindow;
+const {Math,Number,Array,Object,Set,Map,WeakMap,WeakSet,JSON,Reflect,Float32Array,Float64Array,Uint8Array,Uint32Array,ArrayBuffer,DataView,String,Boolean,Date,Promise,Error,TypeError,RangeError,Infinity,NaN,performance,structuredClone}=globalThis;
 /* PCOL rule helpers. x/z are cloth coordinates; y is height. No game mutation.
  * WPBSA 2024-25: definitions 17/20, play 3/4/7/8/11/12.
  * https://wpbsa.com/wp-content/uploads/2198_WPBSA-Rulebook-2024-25.pdf
@@ -979,6 +980,8 @@ const PCOLTrial = (() => {
   function create({game, factories, getRules, isReady, fixedSnapshot=null}) {
     let worker = null, mesh = null, initialized = null, pending = null, sequence = 0, generation = 0, busy = false;
     let lastResult = null;
+    let cachedSnapshot = fixedSnapshot, cachedKey = fixedSnapshot ? JSON.stringify(fixedSnapshot) : null;
+    const fixedKey = cachedKey;
     function dispose(reason = 'Trial cancelled') {
       generation++;
       worker?.terminate(); worker = null; initialized = null; mesh = null;
@@ -1008,18 +1011,30 @@ const PCOLTrial = (() => {
         stepSize:world.stepSize,maxIter:world.solver.maxIter});
       return initialized;
     }
-    function snapshot() {
-      if(fixedSnapshot)return structuredClone(fixedSnapshot);
+    function fingerprint() {
+      if(fixedSnapshot)return fixedKey;
+      const sim=game._simulator,balls=sim.getBalls();
+      if(!isReady()||balls.some(b=>b.active&&!b.asleep))throw new Error('Wait for a settled, playable table');
+      return JSON.stringify([sim.sceneId,sim._world.evolution,getRules(),balls.map(b=>
+        [b.index,b.number,b.radius,b.mass,b.active,b.position.x,b.position.y,b.position.z,b.spot.x,b.spot.y,b.spot.z])]);
+    }
+    function readSnapshot(refresh=false) {
+      if(fixedSnapshot)return fixedSnapshot;
+      const key=fingerprint();
+      if(cachedSnapshot&&key===cachedKey&&!refresh)return cachedSnapshot;
       const sim = game._simulator;
-      if (!isReady() || sim.getBalls().some(b => b.active && !b.asleep)) throw new Error('Wait for a settled, playable table');
       const state = {sceneId:sim.sceneId,serial:sim._world.serialize({balls:[]}),rules:getRules(),
         balls:sim.getBalls().map(b => ({i:b.index,n:b.number,r:b.radius,mass:b.mass,active:b.active,
           x:b.position.x,y:b.position.y,z:b.position.z,
           spot:{x:b.spot.x,y:b.spot.y,z:b.spot.z},transient:{rfPower:b.rfPower,
             rfDir:{x:b.rfDir.x,y:b.rfDir.y,z:b.rfDir.z},penetration:b.penetration,
             peneOffset:{x:b.peneOffset.x,y:b.peneOffset.y,z:b.peneOffset.z},collisionMask:b.collisionMask}}))};
-      return structuredClone(state);
+      const captured=structuredClone(state);
+      if(!cachedSnapshot||key!==cachedKey){cachedKey=key;cachedSnapshot=refresh?structuredClone(captured):captured;}
+      return refresh?captured:cachedSnapshot;
     }
+    // Explicit/public checks still capture the full world; trials reuse the settled root.
+    const snapshot=()=>fixedSnapshot?structuredClone(fixedSnapshot):readSnapshot(true);
     function currentStroke() {
       const ctl = game._fpc;
       if (!ctl.isReadyToStroke()) throw new Error('Aim and let the cue settle before simulating this shot');
@@ -1028,7 +1043,7 @@ const PCOLTrial = (() => {
       return {stroke:Array.from(stroke)};
     }
     const roots = new WeakSet();
-    async function runTrial(before, root, compiled, options) {
+    async function runTrial(before, root, compiled, options, rootKey) {
       busy = true;
       try {
         const ready = initialize(), run = generation;
@@ -1037,7 +1052,7 @@ const PCOLTrial = (() => {
         const result = await request('simulate',{snapshot:before,stroke:compiled.stroke,options},
           Math.min(60000, Math.max(1, options.maxWallMs || 5000)) + 3000);
         let stale = true;
-        try { stale = JSON.stringify(root) !== JSON.stringify(snapshot()); } catch (_) {}
+        try { stale = rootKey !== fingerprint(); } catch (_) {}
         lastResult = {...result,stale,compiled,snapshot:root};
         roots.add(lastResult);
         return lastResult;
@@ -1045,25 +1060,26 @@ const PCOLTrial = (() => {
     }
     async function simulate(shot, options = {}) {
       if (busy) throw new Error('A trial is already running');
-      const before = snapshot();
+      const before = readSnapshot(),rootKey=cachedKey;
       const compiled = shot == null ? currentStroke() : Array.isArray(shot) || ArrayBuffer.isView(shot)
         ? {stroke:Array.from(new Float32Array(shot))} : PCOLTrialShot.compile(game,shot,fixedSnapshot?before.balls:undefined);
-      return runTrial(before,before,compiled,options);
+      return runTrial(before,before,compiled,options,rootKey);
     }
     async function simulateFrom(parentResult, shot, options = {}) {
       if (busy) throw new Error('A trial is already running');
       if (!parentResult || !roots.has(parentResult) || parentResult.stale || !parentResult.nextSnapshot || !parentResult.nextBalls)
         throw new Error('A settled legal trial continuation is required');
-      if (JSON.stringify(parentResult.snapshot) !== JSON.stringify(snapshot())) throw new Error('Trial root is stale');
+      if (parentResult.snapshot !== readSnapshot()) throw new Error('Trial root is stale');
+      const rootKey=cachedKey;
       if (shot == null) throw new Error('A detached continuation shot is required');
       const compiled = Array.isArray(shot) || ArrayBuffer.isView(shot)
         ? {stroke:Array.from(new Float32Array(shot))} : PCOLTrialShot.compile(game,shot,parentResult.nextBalls);
-      return runTrial(structuredClone(parentResult.nextSnapshot),parentResult.snapshot,compiled,options);
+      return runTrial(parentResult.nextSnapshot,parentResult.snapshot,compiled,options,rootKey);
     }
     async function simulateScenario(scenario, shot, options = {}) {
       if (busy) throw new Error('A trial is already running');
       if (!scenario || typeof scenario !== 'object' || shot == null) throw new Error('A detached scenario and shot are required');
-      const root = snapshot(), before = structuredClone(root);
+      const root = readSnapshot(), rootKey=cachedKey, before = structuredClone(root);
       if (scenario.serial != null) {
         before.serial = structuredClone(scenario.serial);
         for (const ball of before.balls) delete ball.transient;
@@ -1084,11 +1100,11 @@ const PCOLTrial = (() => {
       } else delete trialOptions.cuePosition;
       const compiled = Array.isArray(shot) || ArrayBuffer.isView(shot)
         ? {stroke:Array.from(new Float32Array(shot))} : PCOLTrialShot.compile(game,shot,balls);
-      return runTrial(before,root,compiled,trialOptions);
+      return runTrial(before,root,compiled,trialOptions,rootKey);
     }
-    return {snapshot,simulate,simulateFrom,simulateScenario,simulateAim:options => simulate(null,options),
+    return {snapshot,fingerprint,simulate,simulateFrom,simulateScenario,simulateAim:options => simulate(null,options),
       createSession:root=>create({game,factories,getRules,isReady,fixedSnapshot:structuredClone(root)}),
-      compile:shot => { const before=snapshot(); return PCOLTrialShot.compile(game,shot,fixedSnapshot?before.balls:undefined); },
+      compile:shot => { const before=readSnapshot(); return PCOLTrialShot.compile(game,shot,fixedSnapshot?before.balls:undefined); },
       cancel:() => dispose(),dispose,
       getStatus:() => ({busy,initialized:!!worker,lastResult:lastResult && {
         status:lastResult.status,stale:lastResult.stale,steps:lastResult.steps,elapsedMs:lastResult.elapsedMs}})};
@@ -1445,10 +1461,13 @@ const PCOLSearchGeometry = (() => {
     const cue=(state.balls||[]).find(b=>active(b)&&b.n===0),out=[],bounds=state.bounds;if(!cue)return out;
     for(const blocker of (state.balls||[]).filter(b=>active(b)&&b.n>0&&!on.some(t=>t.i===b.i)))for(const target of on){
       const axis=unit(target,blocker);if(!axis)continue;
+      let visibleTarget=null;
       for(const length of [.10,.22,.36]){const centre={x:blocker.x+axis.x*length,z:blocker.z+axis.z*length};
         if(bounds&&(centre.x<bounds.minX+radius(cue)||centre.x>bounds.maxX-radius(cue)||centre.z<bounds.minZ+radius(cue)||centre.z>bounds.maxZ-radius(cue)))continue;
         const shadowCue={...cue,...centre};
-        const hidden=on.every(t=>edgeVisibility(state,shadowCue,t,true)===0);
+        let hidden=true;
+        if(visibleTarget&&edgeVisibility(state,shadowCue,visibleTarget,true)!==0)hidden=false;
+        else for(const t of on){if(t===visibleTarget)continue;if(edgeVisibility(state,shadowCue,t,true)!==0){visibleTarget=t;hidden=false;break;}}
         if(hidden){out.push({id:`shadow-${blocker.i}-${target.i}-${length}`,hideBehindBallId:blocker.i,centre,radius:.045});if(out.length===12)return out;}}}
     return out;
   }
@@ -1471,6 +1490,7 @@ if(typeof module!=='undefined'&&module.exports)module.exports=PCOLSearchGeometry
 /* Bounded geometric proxies, not calibrated pot probabilities or opponent trials. */
 const PCOLTacticalPolicy = (() => {
   const core=typeof PCOLCore!=='undefined'?PCOLCore:typeof require==='function'?require('./rules-core'):null;
+  const skill=()=>typeof PCOLShotSkill!=='undefined'?PCOLShotSkill:require('./shot-skill');
   const active=b=>b.active!==false;
   const dist=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
   const clamp=n=>Math.max(0,Math.min(1,n));
@@ -1482,11 +1502,18 @@ const PCOLTacticalPolicy = (() => {
     const snookersInHand=remaining!==null&&-deficit>remaining;
     const shallowNeedSnookers=remaining!==null&&deficit>remaining&&(deficit-remaining)<=12&&liveReds>=3;
     return {objective:remaining!==null&&deficit>remaining?'need-snookers':deficit<0&&remaining!==null&&-deficit>remaining*.55?'contain':'build',
-      style:['balanced','attacking','defensive'].includes(state.style)?state.style:'balanced',deficit,remainingPoints:remaining,
+      style:'unified',deficit,remainingPoints:remaining,
       snookersInHand,shallowNeedSnookers};
   }
   function routeQuality(route,scale) {
     return clamp((route.cut||.15)**1.5/(1+2*(route.travel||0)/scale));
+  }
+  function aggregate(state,values) {
+    const context=analyze(state),mean=values.reduce((a,b)=>a+b,0)/values.length;
+    const downside=Math.max(0,mean-Math.min(...values));
+    const lead=-(context.deficit||0),remaining=Math.max(1,context.remainingPoints||1);
+    const riskPreference=.12+.18*clamp(lead/remaining);
+    return {score:mean-riskPreference*downside,mean,downside,riskPreference};
   }
   function layout(state,geometry) {
     const cue=(state.balls||[]).find(b=>active(b)&&b.n===0),on=geometry.targets(state,state.rules?.ballOn,null);
@@ -1497,7 +1524,16 @@ const PCOLTacticalPolicy = (() => {
       const target=on.find(b=>b.i===potId)||on.find(b=>b.i===r.targetIndex),nominee=state.rules?.freeBallNominee===r.targetIndex;
       const mask=state.rules?.ballOn||0,nominated=state.rules?.nominatedColour;
       const points=nominee?(mask===2?1:mask===252?(nominated||target?.n||2):Math.max(0,...[2,3,4,5,6,7].filter(n=>mask&(1<<n)))):target?.n||0;
-      const quality=routeQuality(r,scale);return {...r,quality,pointValue:quality*points};
+      let quality=routeQuality(r,scale);
+      const level=state.rules?.playerIndex===(state.rootPlayerIndex??state.rules?.playerIndex)?state.skill:state.opponentSkill;
+      const pocket=state.pockets?.[r.pocketIndex];
+      if(level&&target&&pocket?.r&&r.direction&&!r.plant&&!r.doubleShot){
+        const shot={direction:r.direction,power:.3,vertical:0};
+        const uncertainty=skill().describe(state,{...r,shot},level);
+        const tolerance=Math.atan2(Math.max(0,pocket.r-(target.r||.026))*(r.cut||.15),Math.max(.01,r.travel||dist(cue,target)+dist(target,pocket)));
+        quality*=clamp(tolerance/(Math.sqrt(3)*uncertainty.angleSigma));
+      }
+      return {...r,quality,pointValue:quality*points};
     }).sort((a,b)=>b.pointValue-a.pointValue);
     const best=routes[0],alternative=routes.find(r=>r.targetIndex!==best?.targetIndex);
     const third=routes.find(r=>r.targetIndex!==best?.targetIndex&&r.targetIndex!==alternative?.targetIndex);
@@ -1569,11 +1605,11 @@ const PCOLTacticalPolicy = (() => {
       const balls=state.balls;
       if(!balls||typeof balls!=='object')return layout(state,geometry);
       let entries=layouts.get(balls);
-      const cached=entries?.find(e=>e.bounds===state.bounds&&e.pockets===state.pockets&&sameRules(e.rules,state.rules));
+      const cached=entries?.find(e=>e.bounds===state.bounds&&e.pockets===state.pockets&&e.skill===state.skill&&e.opponentSkill===state.opponentSkill&&e.rootPlayerIndex===state.rootPlayerIndex&&sameRules(e.rules,state.rules));
       if(cached)return cached.value;
       const value=layout(state,geometry);
       if(!entries){entries=[];layouts.set(balls,entries);}
-      entries.push({bounds:state.bounds,pockets:state.pockets,rules:state.rules,value});
+      entries.push({bounds:state.bounds,pockets:state.pockets,rules:state.rules,skill:state.skill,opponentSkill:state.opponentSkill,rootPlayerIndex:state.rootPlayerIndex,value});
       return value;
     }
     return {layout:cachedLayout,evaluate(state,candidate,result){
@@ -1613,12 +1649,14 @@ const PCOLTacticalPolicy = (() => {
       development,laneAvailability:after.lanes};
     const netPoints=points*(actor===root?1:-1);
     // All values use points. Route quality is a bounded proxy for short-horizon value.
-    const leaf=after.pointValue||0;
+    const leaf=(after.pointValue||0)+.6*(after.alternative||0)+.25*Math.min(2,after.alternativeTargets||0);
     let futureValue=stays?leaf:-leaf;
     const baseScores=state.scores||state.rules?.scores||[0,0];
     const derivedScores=baseScores.map((score,index)=>score+(points>0&&index===actor?points:points<0&&index!==actor?-points:0));
     const scores=result.nextContext?.scores||result.nextSnapshot?.rules?.scores||derivedScores;
-    const terminal=verdict.frameOutcome==='end'||nextRules.ballOn===0;
+    const early=!verdict.foulCode&&core?.earlyFrameOutcome({balls:next.balls,ballOn:next.rules.ballOn,scores,playerIndex:nextRules.playerIndex,
+      actor,continueBreak:!!verdict.continueBreak,freeBall:!!nextRules.freeBallAvailable,freeBallReview:!!nextRules.freeBallReview});
+    const terminal=verdict.frameOutcome==='end'||nextRules.ballOn===0||!!early;
     const margin=(scores[root]||0)-(scores[1-root]||0);
     const remaining=core?.remainingPoints(next.balls,next.rules.ballOn);
     const removed=Number.isFinite(state.remainingPoints)&&Number.isFinite(remaining)?Math.max(0,state.remainingPoints-remaining):0;
@@ -1626,7 +1664,7 @@ const PCOLTacticalPolicy = (() => {
     const blockerDelta=blockersAfter-blockersBefore;
     const live=(next.balls||[]).filter(b=>active(b)&&b.n>0);
     const liveRedsAfter=live.filter(b=>b.n===1).length;
-    const mathematicallyDead=!terminal&&margin< -7&&live.length===1&&live[0].n===7;
+    const mathematicallyDead=margin< -7&&live.length===1&&live[0].n===7;
     const cue=next.balls.find(b=>active(b)&&b.n===0),bounds=next.bounds;
     const cueBaulk=bounds&&cue?clamp(1-(cue.x-bounds.minX)/(bounds.maxX-bounds.minX)):0;
     const displaced=facts.displaced??=(next.balls||[]).filter(b=>active(b)&&b.n>0&&state.balls.some(old=>old.i===b.i&&dist(old,b)>.02));
@@ -1666,7 +1704,7 @@ const PCOLTacticalPolicy = (() => {
     if(terminal)futureValue=0;
     Object.assign(features,{netPoints,immediateCost,futureValue,terminalValue,nextPlayerIndex:nextRules.playerIndex,routeQualityProxy:1-difficulty,
       snookered:after.snookered,opponentSnookered:!stays&&after.snookered===true,selfSnookered:stays&&after.snookered===true,
-      hasDirectHit:after.hasDirectHit,remainingPoints:remaining,recoveryCost,effect,blockersBefore,blockersAfter,blockerDelta,resourceValue,stillNeedsSnookers,shallowComeback,clinchAfter,scoringDiscount,shadowBefore,shadowAfter,shadowDelta,lostObjects,
+      hasDirectHit:after.hasDirectHit,remainingPoints:remaining,recoveryCost,effect,blockersBefore,blockersAfter,blockerDelta,resourceValue,stillNeedsSnookers,shallowComeback,clinchAfter,scoringDiscount,shadowBefore,shadowAfter,shadowDelta,lostObjects,earlyFrameReason:early?.reason||null,
       cueBaulk,objectBallLeak,mobility:stays?after.mobility||0:0,safeMiss,costlyMiss,twoWayPotential,displacedObjectBallIds:displaced.map(b=>b.i),mathematicallyDead});
     return {score:netPoints+immediateCost+futureValue+terminalValue,netPoints,immediateCost,futureValue,terminalValue,features};
   }
@@ -1741,7 +1779,7 @@ const PCOLTacticalPolicy = (() => {
     return candidates.every(poor)?finish('concede','weak-tested-recovery-and-scarce-blockers'):
       finish('continue','recovery-evidence-not-poor-enough');
   }
-  return {analyze,evaluate,createEvaluator,createSession,layout,estimate,classify,concession};
+  return {analyze,aggregate,evaluate,createEvaluator,createSession,layout,estimate,classify,concession};
 })();
 
 /* Local geometric intentions; native trials establish achievement. */
@@ -1923,7 +1961,14 @@ const PCOLShotSkill = (() => {
     return {...shot,direction:{x:Math.cos(angle),z:Math.sin(angle)},power,vertical,side:shot.side||0,
       elevation:vertical<0?.025*Math.PI:0};
   }
-  return {describe,perturb};
+  // Common, stratified coordinates for comparisons. Each new pair changes all
+  // three axes; actual delivery still draws independent uniform errors.
+  function coordinates(index) {
+    const pairs=[[.25,.25,.75],[1/12,7/12,5/12],[5/12,1/12,1/12]];
+    const row=pairs[Math.floor(index/2)%pairs.length];
+    return index%2?row.map(v=>1-v):row;
+  }
+  return {describe,perturb,coordinates};
 })();
 
 /* Geometric development intentions only; the native trial must prove the cannon and continuation. */
@@ -2007,7 +2052,7 @@ const PCOLDevelopment = (() => {
 
 /* Bounded minimax replaces a leaf estimate with adjudicated points and a new leaf. */
 const PCOLContinuation=(()=>{
-  function create({geometry,policy,core,development}) {
+  function create({geometry,policy,core,development,skill}) {
     function settled(base,result) {
       if(!result.nextSnapshot||!result.nextBalls||result.adjudication?.foulCode)return null;
       const rules={...base.rules,...result.nextSnapshot.rules,...result.nextContext};
@@ -2066,19 +2111,30 @@ const PCOLContinuation=(()=>{
         assessment:'bounded sampled branch; not evidence for every execution outcome'};
       let interrupted=false;
       const cap=Math.max(0,Math.min(12,Math.floor(maxTrials)));
-      const horizon=requestedDepth??(cap>=6?2:cap>0?1:0);
+      const levelFor=s=>s.rules.playerIndex===root?s.skill:s.opponentSkill;
+      const checkExecution=!!skill&&!!levelFor(nextState(state,result)||state);
+      const width=checkExecution?3:1;
+      const horizon=requestedDepth??(cap>=(checkExecution?12:6)?2:cap>0?1:0);
+      const requestedWidth=requestedBreadth??(checkExecution&&horizon>1?1:2);
       summary.depth=horizon;
+      summary.execution=checkExecution?'nominal-and-common-error-pair':'geometric-proxy; opponent skill may be unknown';
       async function visit(base,parent,depth) {
         const next=nextState(base,parent);if(!next||depth<=0)return null;
         const maximise=next.rules.playerIndex===root,branches=[];
         const available=cap-summary.trials;
         // Compare siblings before spending the same bounded cap below a single route.
-        const breadth=Math.min(requestedBreadth??2,cap);
-        if(available<breadth){interrupted=true;return null;}
+        const level=levelFor(next),sampleCount=skill&&level?2:0,unit=1+sampleCount;
+        const breadth=Math.min(requestedWidth,Math.floor(cap/unit));
+        if(!breadth||available<breadth*unit){interrupted=true;return null;}
         for(const seed of seeds(next,breadth)) {
+          const executions=[seed],uncertainty=sampleCount?skill.describe(next,seed,level):null;
+          for(let i=0;i<sampleCount;i++){let k=0;const values=skill.coordinates(i);
+            executions.push({...seed,shot:skill.perturb(seed.shot,uncertainty,()=>values[k++])});}
+          const observations=[];
+          for(let sample=0;sample<executions.length;sample++){
           if(summary.trials>=cap||!canContinue()){interrupted=true;break;}
           summary.trials++;
-          const r=await simulateFrom(parent,seed);
+          const r=await simulateFrom(parent,executions[sample]);
           if(r?.status!=='complete'||!r.adjudication||!r.nextBalls){interrupted=true;continue;}
           summary.completed++;
           const e=evaluatePolicy(next,seed,r);
@@ -2086,20 +2142,32 @@ const PCOLContinuation=(()=>{
           const potted=!r.adjudication.foulCode&&r.adjudication.score>0&&(r.potted||[]).some(i=>i===seed.targetIndex||i===seed.potTargetIndex);
           const cluster=seed.development?.clusterIds||[];
           const opened=cluster.some(i=>(e.features?.freedRedIds||[]).includes(i)&&(r.contacts||[]).some(c=>c.ballIndex===i));
-          const entry={actor:next.rules.playerIndex,ballPhase:next.rules.ballOn,targetIndex:seed.targetIndex,
+          const entry={actor:next.rules.playerIndex,ballPhase:next.rules.ballOn,targetIndex:seed.targetIndex,execution:sample===0?'nominal':'sample-'+(sample-1),
             nominatedColour:seed.nominatedColour??null,points:r.adjudication.score||0,potted,
             nextActor:e.features?.nextPlayerIndex??r.nextContext?.playerIndex??r.nextSnapshot?.rules?.playerIndex,
             foulCode:r.adjudication.foulCode||0,development:!!seed.development,developmentOpened:opened,clusterIds:cluster,components:{netPoints:e.netPoints,immediateCost:e.immediateCost||0,futureValue:e.futureValue,terminalValue:e.terminalValue}};
-          branches.push({value:e.score,path:[entry],r,e,terminalLoss:e.terminalValue<0});
+          observations.push({value:e.score,path:[entry],r,e,terminalLoss:e.terminalValue<0});
+          }
+          const nominal=observations.find(row=>row.path[0].execution==='nominal');
+          if(!nominal)continue;
+          const errors=observations.filter(row=>row!==nominal);
+          const value=errors.length===sampleCount&&sampleCount?policy.aggregate({...next,rootPlayerIndex:next.rules.playerIndex},errors.map(row=>maximise?row.value:-row.value)).score*(maximise?1:-1):nominal.value;
+          if(observations.length!==executions.length)interrupted=true;
+          branches.push({...nominal,value,observations,sampleCount});
         }
         branches.sort((a,b)=>maximise?b.value-a.value:a.value-b.value);
-        const expandable=branches.filter(branch=>!branch.e.terminalValue&&nextState(next,branch.r));
-        if(depth>1&&cap-summary.trials<expandable.length*(requestedBreadth??2)){interrupted=true;return branches[0]||null;}
+        const expandable=branches.flatMap(branch=>branch.observations.filter(row=>!row.e.terminalValue&&nextState(next,row.r)));
+        if(depth>1&&cap-summary.trials<expandable.length*requestedWidth*width){interrupted=true;return branches[0]||null;}
         if(depth>1)for(const branch of expandable) {
           if(summary.trials>=cap||!canContinue()){interrupted=true;break;}
           if(branch.e.terminalValue)continue;
           const child=await visit(next,branch.r,depth-1);
           if(child){branch.value=branch.e.netPoints+(branch.e.immediateCost||0)+branch.e.terminalValue+child.value;branch.path=branch.path.concat(child.path);branch.terminalLoss=child.terminalLoss;}
+        }
+        if(depth>1)for(const branch of branches){
+          const errors=branch.observations.slice(1),nominal=branch.observations[0];
+          branch.value=errors.length===branch.sampleCount&&errors.length?policy.aggregate({...next,rootPlayerIndex:next.rules.playerIndex},errors.map(row=>maximise?row.value:-row.value)).score*(maximise?1:-1):nominal.value;
+          branch.path=nominal.path;branch.terminalLoss=nominal.terminalLoss;
         }
         branches.sort((a,b)=>maximise?b.value-a.value:a.value-b.value);
         return branches[0]||null;
@@ -2110,6 +2178,7 @@ const PCOLContinuation=(()=>{
         const best=await visit(state,result,horizon);
         if(best){
           summary.sampledPath=best.path;
+          summary.executionOutcomes=best.observations.map(row=>({value:row.value,path:row.path}));
           if(summary.mode==='continuation'&&!result.adjudication.foulCode&&result.adjudication.score>0)
             for(const entry of best.path){if(entry.actor!==root||!entry.potted)break;summary.verifiedPath.push(entry);}
           summary.provenContinuation=summary.verifiedPath.length>0;
@@ -2257,6 +2326,7 @@ const PCOLTurnManager = (() => {
     }
     async function evaluateOption(option,trial,job,serial) {
       const state=option.state;
+      const evaluate=policy.createEvaluator?policy.createEvaluator(state,geometry):(c,r)=>policy.evaluate(state,c,r,geometry);
       const nominalDeadline=performance.now()+Math.max(0,job.deadline-performance.now())*.65;
       const scenario={balls:state.balls,rules:state.rules,cuePosition:option.position};
       if(serial)scenario.serial=serial;
@@ -2269,35 +2339,34 @@ const PCOLTurnManager = (() => {
           maxWallMs:Math.min(2200,Math.max(1,nominalDeadline-performance.now())),trace:false});
         if(r.stale)throw new Error('Position changed; AI decision is stale');
         if(r.status!=='complete'||!r.adjudication)continue;
-        const evaluated=policy.evaluate(state,seed,r,geometry);
+        const evaluated=evaluate(seed,r);
         if(r.adjudication.foulCode){fouls++;continue;}
-        if(seed.kind==='attack'&&!r.potted.includes(seed.targetIndex))continue;
         legal++;
         const score=evaluated.score;
         finalists.push({score,seed,result:r,features:evaluated.features});
       }
-      for(const candidate of finalists.sort((a,b)=>b.score-a.score).slice(0,2)) {
+      const testedFinalists=finalists.sort((a,b)=>b.score-a.score).slice(0,2);
+      for(const candidate of testedFinalists) {
         const uncertainty=skill.describe(state,candidate.seed,state.skill);
-        let samples=0,misses=0,total=0,min=Infinity;
-        for(const values of [[.18,.68,.4],[.82,.32,.6]]) {
+        candidate.samples=[];
+        for(let index=0;index<2;index++) {
+          const values=skill.coordinates(index);
           if(epoch!==job.epoch||performance.now()>=job.deadline)break;
           let i=0;const shot=skill.perturb(candidate.seed.shot,uncertainty,()=>values[i++]);
           const r=await trial.simulateScenario(scenario,shot,{nominatedColour:candidate.seed.nominatedColour,maxWallMs:Math.min(2000,Math.max(1,job.deadline-performance.now()))});
           if(r.stale)throw new Error('Position changed; AI decision is stale');
           if(r.status==='complete'&&r.adjudication){
-            samples++;
-            if(r.adjudication.foulCode)misses++;
-            const value=policy.evaluate(state,candidate.seed,r,geometry).score;
-            total+=value;min=Math.min(min,value);
+            candidate.samples.push({index,value:evaluate(candidate.seed,r).score,foul:!!r.adjudication.foulCode});
           }
         }
-        candidate.features={...candidate.features,executionSamples:samples,sampledFoulRate:samples?misses/samples:null};
-        if(samples){
-          const mean=total/samples,downside=mean-min;
-          const preference=state.style==='defensive'?.4:state.style==='attacking'?.08:.22;
-          candidate.score=mean-preference*downside;
-          candidate.features={...candidate.features,executionMean:mean,executionDownside:downside};
-        }
+      }
+      const indices=[0,1].filter(i=>testedFinalists.every(c=>c.samples.some(row=>row.index===i)));
+      for(const candidate of testedFinalists){
+        const rows=candidate.samples.filter(row=>indices.includes(row.index));
+        candidate.nominalScore=candidate.score;
+        candidate.features={...candidate.features,executionSamples:rows.length,sampledFoulRate:rows.length?rows.filter(r=>r.foul).length/rows.length:null};
+        if(rows.length){const value=policy.aggregate(state,rows.map(r=>r.value));candidate.score=value.score;
+          candidate.features={...candidate.features,executionMean:value.mean,executionDownside:value.downside};}
         if(!best||candidate.score>best.score)best=candidate;
       }
       option.features={...option.features,tested,legal,fouls,verified:!!best,freeBallNominee:option.nominee,
@@ -2305,6 +2374,7 @@ const PCOLTurnManager = (() => {
       if(best) {
         const r=best.result,v=r.adjudication,cue=r.nextBalls.find(b=>b.n===0);
         option.score=best.score;option.features={...option.features,...best.features};
+        option.nominalScore=best.nominalScore;option.executionScores=best.samples;
         option.outcome={score:v.score,foulCode:0,nextBallOn:v.nextBallOn,cue:{x:cue.x,z:cue.z}};
         option.candidate={...best.seed,score:best.score,features:best.features,stroke:r.stroke,actual:r.compiled.actual,
           skill:skill.describe(state,best.seed,state.skill),outcome:{...option.outcome,nominatedColour:v.ballOnUsed}};
@@ -2332,7 +2402,9 @@ const PCOLTurnManager = (() => {
             action.features={...action.features,verified:!!best,assessment:best?'trial':'unknown',actingPlayer:action.state.rules.playerIndex};
             action.score=null;
             if(best){action.features={...action.features,...best.features};
-              action.score=action.action==='continue'?best.score:-best.score;action.outcome=best.outcome;}
+              const sign=action.action==='continue'?1:-1;
+              action.score=sign*best.score;action.nominalScore=sign*best.nominalScore;
+              action.executionScores=best.executionScores.map(row=>({...row,value:sign*row.value}));action.outcome=best.outcome;}
             choices.push({...action,label:{continue:'接手当前球形',again:'让对手从现位再打',restore:'复位后让对手重打'}[action.action]});
           }
           const verified=choices.filter(c=>c.features.verified);
@@ -2354,14 +2426,20 @@ const PCOLTurnManager = (() => {
           }
           const verified=choices.filter(c=>c.candidate);
           choices=verified.length?verified:choices.slice(0,1);
-          choices.sort((a,b)=>b.score-a.score);choices=choices.slice(0,6);
         }
         if(epoch!==job.epoch)return;
         if(!choices.length)throw new Error('No legal turn choices available for AI');
+        const shared=[0,1].filter(i=>choices.every(c=>c.executionScores?.some(row=>row.index===i)));
+        for(const choice of choices){
+          if(choice.nominalScore==null)continue;
+          choice.score=shared.length?policy.aggregate(state,choice.executionScores.filter(row=>shared.includes(row.index)).map(row=>row.value)).score:choice.nominalScore;
+          choice.features.comparisonBasis=shared.length?'common-execution':'common-nominal';choice.features.comparedSampleIndices=shared;
+        }
+        choices.sort((a,b)=>b.score-a.score);choices=choices.slice(0,6);
         try {onEvent('turn.search',{kind,elapsedMs:performance.now()-started,choices:choices.map(c=>({id:c.id,action:c.action,score:c.score,features:c.features,outcome:c.outcome,position:c.position,nominee:c.nominee}))});}catch(_){}
         job.phase='turn-selection';changed();
         const selected=await choose({kind,state:{ballOn:state.rules.ballOn,playerIndex:state.rules.playerIndex,
-          scores:state.scores,remainingPoints:state.remainingPoints,style:state.style},choices,
+          scores:state.scores,remainingPoints:state.remainingPoints,skill:state.skill},choices,
           timeoutMs:Math.max(1000,90000-(performance.now()-started))});
         if(epoch!==job.epoch)return;
         if(JSON.stringify(trial.snapshot())!==before)throw new Error('Position changed; AI decision is stale');
@@ -2401,8 +2479,10 @@ const PCOLSearch=(()=>{
       const started=performance.now(),trial=options.trial||getTrial();
       if(trial.getStatus?.().busy)throw new Error('Wait for the current trial before searching');
       const before=options.snapshot||trial.snapshot(),fingerprint=JSON.stringify(before);
+      const liveFingerprint=trial.fingerprint?.(),checkedRoots=new WeakSet();
       const state={...(options.state||getState(before))};state.rules={...state.rules};
-      state.rootPlayerIndex=state.rules.playerIndex??0;if(options.style)state.style=options.style;
+      state.rootPlayerIndex=state.rules.playerIndex??0;state.style='unified';
+      if(options.skill)state.skill=options.skill;
       const rules=state.rules,reviewReasons=[];
       if(!rules.ballOn||rules.ballOn===65535)reviewReasons.push('Search requires standard snooker rules');
       if(rules.freeBallReview||(rules.freeBallAvailable&&rules.freeBallNominee==null&&!rules.freeBallDeclined))reviewReasons.push('Resolve the free-ball choice first');
@@ -2411,16 +2491,22 @@ const PCOLSearch=(()=>{
       const budgetMs=limit(options.budgetMs,45000,100,90000),deadline=started+budgetMs;
       const maxCandidates=Math.floor(limit(options.maxCandidates,96,1,288)),maxResults=Math.floor(limit(options.maxResults,4,1,4));
       const samples=Math.floor(limit(options.riskSamples,2,0,6)),branchCap=Math.floor(limit(options.continuationTrials,6,0,12));
+      const riskCap=samples*8;
       const job=active={trial,inFlight:false,reason:null,phase:'routes'};
       const timer=setTimeout(()=>stop('budget-exhausted'),Math.max(0,deadline-performance.now()));
       const accepted=[],cache=new Map(),outcomes=new Map(),evaluations=new Map(),sampled=new Map(),durations=[],stages=[];
       const counts={generated:0,tried:0,completed:0,incomplete:0,rejected:0,reused:0,recovery:0,refined:0,development:0,riskTrials:0,boundaryTrials:0,branchTrials:0,reasons:{ruling:0,foul:0,miss:0}};
-      const current=()=>{try{return JSON.stringify(trial.snapshot())===fingerprint;}catch(_){return false;}};
+      const current=()=>{try{return liveFingerprint!==undefined?trial.fingerprint()===liveFingerprint:JSON.stringify(trial.snapshot())===fingerprint;}catch(_){return false;}};
       const available=(reserve=0)=>!job.reason&&deadline-performance.now()>reserve;
       const prepared=options.preparedRoot;
-      const brief=brain&&(prepared&&!options.state&&prepared.fingerprint===fingerprint&&prepared.style===state.style?prepared.brief:brain.analyze(state,geometry)),plan=brain?brain.normalizePlan(options.plan||{},brief):null;
-      const searchIntent={primaryIntent:plan?.primaryIntent,fallbackIntent:plan?.fallbackIntent,used:'primary',fallbackTriggered:false,reason:null};
-      let activeIntent=plan?.primaryIntent;
+      const brief=brain&&(prepared&&!options.state&&prepared.fingerprint===fingerprint?prepared.brief:brain.analyze(state,geometry)),plan=brain?brain.normalizePlan(options.plan||{},brief):null;
+      const searchIntent={primaryIntent:plan?.primaryIntent,fallbackIntent:plan?.fallbackIntent,used:'unified',fallbackTriggered:false,reason:'compare-independent-opportunities'};
+      const intentFor=seed=>{
+        if(!plan)return null;
+        const edge=brief.transitionGraph?.find(e=>e.fromId===seed.targetIndex);
+        return {task:seed.development?'develop':seed.kind==='attack'?'position':seed.kind==='escape'?'escape':brief.task==='need-snookers'?'need-snookers':'contain',
+          targetId:seed.targetIndex,nextBallId:edge?.toId??null,sectorId:edge?.sectorId??null,preserveIds:(brief.preserveIds||[]).filter(i=>i!==seed.targetIndex)};
+      };
       const intentWorks=c=>c.intentMet&&
         (!skill||!samples||(sampled.get(c.id)?.length||0)>=samples)&&
         !(sampled.get(c.id)||[]).some(row=>!row.evidence.legal||row.evidence.planCompliance?.intentMet===false);
@@ -2441,8 +2527,7 @@ const PCOLSearch=(()=>{
           scoreBeforeBranches:e.score,branchDelta:0,scoreAfterBranches:e.score,continuation:{status:'unassessed',trials:0}};
       }
       const context=policy?.analyze(state);
-      const styleRisk=state.style==='defensive'?.4:state.style==='attacking'?.08:.22;
-      const riskPreference=Math.max(0,Math.min(.6,styleRisk+(context?.objective==='contain'?.12:context?.objective==='need-snookers'?-.08:0)));
+      const aggregate=values=>policy?.aggregate?policy.aggregate(state,values):{score:values.reduce((a,b)=>a+b,0)/values.length,mean:values.reduce((a,b)=>a+b,0)/values.length,downside:0,riskPreference:0};
       const descriptor=c=>skill?.describe(state,c,options.skill||state.skill||'strong');
       const powerWindow=c=>Math.sqrt(3)*(c.skill||descriptor(c))?.powerSigma||0;
       const bufferedPower=(c,reachedPower,observedShortfall=0)=>{
@@ -2466,7 +2551,8 @@ const PCOLSearch=(()=>{
         try {
           const opts={nominatedColour:nomination,maxWallMs:Math.min(5000,Math.max(1,deadline-performance.now())),trace:brain?'cue':false};
           const r=await(parent?trial.simulateFrom(parent,shot,opts):trial.simulate(shot,opts));
-          if(r.stale||r.snapshot&&JSON.stringify(r.snapshot)!==fingerprint){job.reason='stale';return null;}
+          if(r.stale||r.snapshot&&!checkedRoots.has(r.snapshot)&&JSON.stringify(r.snapshot)!==fingerprint){job.reason='stale';return null;}
+          if(r.snapshot)checkedRoots.add(r.snapshot);
           return r;
         }catch(error){if(!current())job.reason='stale';if(job.reason)return null;throw error;}
         finally{durations.push(performance.now()-t);job.inFlight=false;}
@@ -2478,9 +2564,8 @@ const PCOLSearch=(()=>{
       async function explore(seeds,cap,reserve=0,stopAfterLegal=false) {
         counts.generated+=seeds.length;let used=0;
         for(const input of seeds) {
-          const useAttackPrimary=job.phase==='coverage'&&input.kind==='attack'&&activeIntent&&['contain','need-snookers','escape'].includes(activeIntent.task)&&plan?.primaryIntent&&['position','build','develop'].includes(plan.primaryIntent.task);
-          const seedIntent=input.intent||((useAttackPrimary||input.development)&&plan?{...plan.primaryIntent,task:input.development?'develop':plan.primaryIntent.task,targetId:input.targetIndex}:activeIntent);
-          const seed=seedIntent?{...input,intent:seedIntent,intentSource:useAttackPrimary?'coverage':searchIntent.used}:input;
+          const seedIntent=input.intent||intentFor(input);
+          const seed=seedIntent?{...input,intent:seedIntent,intentSource:job.phase}:input;
           if(!available(reserve)||used>=cap||counts.tried>=maxCandidates)break;
           const k=key(seed);let r=cache.get(k);
           if(r){counts.reused++;if(accepted.some(c=>key(c)===k))continue;}
@@ -2530,36 +2615,33 @@ const PCOLSearch=(()=>{
       function updateRisk(c,indices=null) {
         const rows=(sampled.get(c.id)||[]).filter(row=>!indices||indices.includes(row.evidence.sampleIndex)),values=rows.map(r=>r.value),n=values.length;
         if(!n)return;
-        const mean=values.reduce((a,b)=>a+b,0)/n,downside=Math.max(0,mean-Math.min(...values));
+        const combined=aggregate(values),{mean,downside,riskPreference}=combined;
         const safeMisses=rows.filter(r=>r.features?.safeMiss===true).length;
         const costlyMisses=rows.filter(r=>r.features?.costlyMiss===true).length;
         const hasFoul=rows.some(r=>r.result.adjudication.foulCode);
         const twoWay=!!(rows.some(row=>row.result.adjudication.score>0)&&!hasFoul&&costlyMisses===0&&safeMisses>0);
-        const effectiveDownside=twoWay?downside*.25:costlyMisses>0?downside*(1+.3*(costlyMisses/n)):downside;
-        const twoWayBonus=twoWay?Math.min(2.5,.8*(safeMisses/n)):0;
-        c.score=mean-riskPreference*effectiveDownside+twoWayBonus;
+        const effectiveDownside=downside,twoWayBonus=0;
+        c.score=combined.score;
         c.features={...c.features,twoWay,safeMissRate:safeMisses/n,costlyMissRate:costlyMisses/n,twoWayBonus};
         c.evidence.samples=(sampled.get(c.id)||[]).map(r=>r.evidence);
-        c.evidence[indices?'comparisonExecution':'execution']={score:c.score,sampleCount:n,sampleIndices:rows.map(row=>row.evidence.sampleIndex),availableSamples:sampled.get(c.id).length,coverage:n>=samples?'complete':'partial',sampleDesign:'common antithetic power +/-1 sigma, then uniform pairs'};
+        c.evidence[indices?'comparisonExecution':'execution']={score:c.score,sampleCount:n,sampleIndices:rows.map(row=>row.evidence.sampleIndex),availableSamples:sampled.get(c.id).length,coverage:n>=samples?'complete':'partial',sampleDesign:'common stratified three-axis pairs; additional pairs change error direction'};
         c.evidence.aggregation={source:'execution-samples',mean,downside,effectiveDownside,twoWayBonus,riskPreference,finalScore:c.score};
         c.risk={...c.risk,samples:n,incomplete:sampled.get(c.id).incomplete||0,legalRate:rows.filter(r=>!r.result.adjudication.foulCode).length/n,
           potRate:rows.filter(r=>r.result.adjudication.score>0).length/n,foulRate:rows.filter(r=>r.result.adjudication.foulCode).length/n,
           safeMissRate:safeMisses/n,costlyMissRate:costlyMisses/n,twoWay,
           meanScore:mean,downside,confidence:'limited',interpretation:'execution samples, not calibrated probabilities'};
       }
-      async function risk(finalists,reserve) {
+      async function risk(finalists,reserve,targetSamples=samples) {
         if(!skill||!samples)return;
-        let randomState=0x6d2b79f5;
-        const random=()=>{randomState=(Math.imul(randomState,1664525)+1013904223)>>>0;return(randomState+.5)/4294967296;};let draw=[];
-        for(let n=0;n<samples&&available(reserve);n++) {
-          if(n%2===0){draw=[random(),random(),random()];if(n===0)draw[1]=.5-1/(2*Math.sqrt(3));}const values=n%2?draw.map(x=>1-x):draw;
-          for(const c of finalists){if(!available(reserve)||counts.riskTrials>=samples*8)break;if(sampled.get(c.id)?.some(row=>row.evidence.sampleIndex===n))continue;let i=0;counts.riskTrials++;
+        for(let n=0;n<targetSamples&&available(reserve);n++) {
+          const values=skill.coordinates?skill.coordinates(n):(n%2?[.75,.75,.25]:[.25,.25,.75]);
+          for(const c of finalists){if(!available(reserve)||counts.riskTrials>=riskCap)break;if(sampled.get(c.id)?.some(row=>row.evidence.sampleIndex===n))continue;let i=0;counts.riskTrials++;
             const r=await simulate(skill.perturb(c.shot,c.skill,()=>values[i++%3]),c.nominatedColour);
             const rows=sampled.get(c.id)||[];sampled.set(c.id,rows);
             if(r?.status!=='complete'||!r.adjudication||!r.nextBalls){rows.incomplete=(rows.incomplete||0)+1;continue;}
             const e=evaluate(c,r,false);rows.push({result:r,evaluated:e,value:e.score,features:e.features,evidence:{sampleIndex:n,powerUniformCoordinate:values[1],...evidence(r,e),
               delivery:{firstContactMade:r.firstHits?.includes(c.targetIndex)??false,targetPotted:!!r.potted?.some(i=>i===c.targetIndex||i===c.potTargetIndex)},planCompliance:e.assessment?.features}});
-            if(n===0&&(!r.firstHits?.includes(c.targetIndex)||c.kind==='attack'&&!r.potted?.some(i=>i===c.targetIndex||i===c.potTargetIndex)))c.executionConcern={source:'sampled-low-power-failure'};
+            if(values[1]<.5&&(!r.firstHits?.includes(c.targetIndex)||c.kind==='attack'&&!r.potted?.some(i=>i===c.targetIndex||i===c.potTargetIndex)))c.executionConcern={source:'sampled-low-power-failure'};
             updateRisk(c);
           }
         }
@@ -2571,9 +2653,13 @@ const PCOLSearch=(()=>{
         let remaining=4*branchCap;
         const branchCache=new Map();
         const trialBranch=async(parent,seed)=>{let hits=branchCache.get(parent);if(!hits){hits=new Map();branchCache.set(parent,hits);}const k=key(seed);if(hits.has(k))return hits.get(k);if(remaining<=0)return null;counts.branchTrials++;remaining--;const r=await simulate(seed.shot,seed.nominatedColour,parent);hits.set(k,r);return r;};
-        const roots=finalists.reduce((n,c)=>n+(commonSamples||1),0);
+        const assessed=finalists.slice().sort((a,b)=>b.score-a.score).slice(0,4);
+        for(const c of finalists)if(!assessed.includes(c)){
+          c.horizon='unknown';c.evidence.continuation={score:null,coverage:'unknown',depth:0,samples:0};
+        }
+        const roots=assessed.reduce((n,c)=>n+(commonSamples||1),0);
         const capPerRoot=Math.min(branchCap,Math.floor(remaining/Math.max(1,roots)));
-        for(const c of finalists) {
+        for(const c of assessed) {
           c.shallowScore=c.score;
           const rows=sampled.get(c.id),branches=commonSamples?rows.filter(row=>commonIndices.includes(row.evidence.sampleIndex)):[{result:outcomes.get(c.id),evaluated:evaluations.get(c.id),value:c.score,evidence:c.evidence.nominal}];
           for(let i=0;i<branches.length&&remaining>0&&available();i++) {
@@ -2587,11 +2673,7 @@ const PCOLSearch=(()=>{
           const covered=branches.every(row=>row.evidence.continuation.coverage==='covered'&&row.evidence.continuation.depth===depth);
           c.horizon=covered?'covered':'unknown';
           if(covered){
-            const values=branches.map(row=>row.evidence.scoreAfterBranches),mean=values.reduce((a,b)=>a+b,0)/values.length;
-            const aggregation=c.evidence.aggregation;
-            const downside=Math.max(0,mean-Math.min(...values));
-            const factor=c.risk?.twoWay?.25:c.features?.costlyMissRate>0?1+.3*c.features.costlyMissRate:1;
-            c.continuationScore=mean-riskPreference*downside*factor+(aggregation?.twoWayBonus||0);
+            c.continuationScore=aggregate(branches.map(row=>row.evidence.scoreAfterBranches)).score;
           }
           c.evidence.continuation={score:c.continuationScore??null,coverage:covered?'complete':branches.some(row=>row.evidence.continuation.trials>0)?'partial':'unknown',depth,samples:branches.length};
           c.evidence.comparison={...c.evidence.comparison,horizon:c.horizon};
@@ -2665,31 +2747,18 @@ const PCOLSearch=(()=>{
           const directed=brain.directed(state,developed.length?developed:baseSeeds,intent,geometry,brief);
           return directed.concat(developed,baseSeeds.filter(c=>c.targetIndex===intent.targetId));
         };
-        const closestIntent=(source,count)=>accepted.filter(c=>c.intentSource===source).sort((a,b)=>
-          (['position','build','develop'].includes(activeIntent.task)?Number(b.outcome.potted?.some(i=>i===activeIntent.targetId||i===b.potTargetIndex))-Number(a.outcome.potted?.some(i=>i===activeIntent.targetId||i===a.potTargetIndex)):0)||
-          (a.features.destinationDistance??Infinity)-(b.features.destinationDistance??Infinity)).slice(0,count);
-        if(plan){
-          await stage('primary-intent',()=>explore(intentSeeds(activeIntent),Math.min(options.fastPlan?12:18,maxCandidates),reserve('primary')));
-          if(brain.refineIntent&&available(reserve('primary')))await stage('primary-adjustment',async()=>{
-            const near=closestIntent('primary',2);
-            await explore(near.flatMap(c=>brain.refineIntent(state,c,outcomes.get(c.id),activeIntent,geometry,brief)),6,reserve('primary'));
-          });
-          await stage('primary-evidence',()=>risk(shortlist(2),reserve('primary')));
-          if(!accepted.some(intentWorks)&&available(reserve('fallback'))){
-            searchIntent.used='fallback';searchIntent.fallbackTriggered=true;
-            searchIntent.reason=accepted.some(c=>c.intentMet)?'execution-window-too-narrow':'primary-goal-unmet';
-            activeIntent=plan.fallbackIntent;
-            await stage('fallback-intent',()=>explore(intentSeeds(activeIntent),Math.min(12,maxCandidates-counts.tried),reserve('fallback')));
-            if(brain.refineIntent&&available(reserve('fallback')))await stage('fallback-adjustment',async()=>{
-              const near=closestIntent('fallback',1);
-              await explore(near.flatMap(c=>brain.refineIntent(state,c,outcomes.get(c.id),activeIntent,geometry,brief)),4,reserve('fallback'));
-            });
-            await stage('fallback-evidence',()=>risk(shortlist(2,true),reserve('fallback')));
-          }
-          if(available(reserve('coverage')))await stage('coverage',()=>explore(baseSeeds,Math.min(24,maxCandidates-counts.tried),reserve('coverage')));
-        }else{
-          await stage('routes',()=>explore(baseSeeds,Math.min(48,maxCandidates),reserve()));
+        // Cover real opportunities before spending on a visit plan's refinements.
+        await stage('coverage',()=>explore(baseSeeds,Math.min(36,maxCandidates),reserve('primary')));
+        if(plan&&available(reserve('fallback'))){
+          const intents=[plan.primaryIntent,plan.fallbackIntent];
+          for(const c of shortlist(3))if(c.intent&&!intents.some(i=>i.task===c.intent.task&&i.targetId===c.intent.targetId))intents.push(c.intent);
+          const groups=intents.map(intent=>intentSeeds(intent).map(c=>({...c,intent:{...intent,targetId:c.targetIndex}})));
+          const directed=[];
+          for(let i=0;i<Math.max(0,...groups.map(g=>g.length));i++)for(const group of groups)if(group[i])directed.push(group[i]);
+          await stage('position-options',()=>explore(directed,18,reserve('fallback')));
         }
+        // Validate early proposals before refinement; their evidence stays eligible.
+        await stage('route-evidence',()=>risk(shortlist(4),reserve('coverage')));
         if(development&&available(reserve()))await stage('development',async()=>{const seeds=development.generate(state,geometry);counts.development=seeds.length;await explore(geometry.diverse?geometry.diverse(seeds):seeds,8,reserve());});
         if(geometry.softContacts&&available(reserve()))await stage('soft-control',()=>softControls(reserve()));
         if(!accepted.some(c=>!c.outcome.foulCode)&&geometry.generateRecovery&&available(reserve()))await stage('recovery',async()=>{const seeds=geometry.generateRecovery(state);counts.recovery=seeds.length;await explore(seeds,18,reserve());});
@@ -2713,17 +2782,30 @@ const PCOLSearch=(()=>{
           // Spend the existing twelve refinements across routes before second variants.
           for(let i=0;i<Math.max(0,...groups.map(g=>g.length));i++)for(const group of groups)if(group[i])seeds.push(group[i]);
           counts.refined=seeds.length;await explore(seeds,12,reserve('coverage'));});
-        const proposals=shortlist(4,true);
-        await stage('risk',()=>risk(proposals,continuation?Math.min(5000,Math.max(0,deadline-performance.now())*.2):0));
+        const riskReserve=continuation?Math.min(5000,Math.max(0,deadline-performance.now())*.2):0;
+        let contenders=accepted.filter(c=>(sampled.get(c.id)?.length||0)>=samples&&samples>0).sort((a,b)=>b.score-a.score);
+        // A new independent route or repaired stroke may challenge the tested pool.
+        const fresh=shortlist(2,true).filter(c=>!contenders.length||c.nominalScore>=contenders[0].score||c.executionRepair?.goalVerified);
+        if(fresh.length)await stage('risk',()=>risk(fresh,riskReserve));
+        contenders=accepted.filter(c=>(sampled.get(c.id)?.length||0)>=samples&&samples>0).sort((a,b)=>b.score-a.score);
+        let comparedPair=[];
+        if(contenders.length>1&&available(riskReserve)){
+          const pair=contenders.slice(0,2),gap=pair[0].score-pair[1].score;
+          const spread=Math.max(...pair.map(c=>{const v=sampled.get(c.id).map(r=>r.value);return Math.max(...v)-Math.min(...v);}));
+          if(gap<=Math.max(1,spread)||pair.some(c=>c.executionConcern||c.development)){
+            const extra=2*Math.floor((riskCap-counts.riskTrials)/4),target=Math.min(6,samples+extra);
+            if(target>samples){comparedPair=pair;await stage('decision-evidence',()=>risk(pair,riskReserve,target));}
+          }
+        }
         // Every earlier verified stroke stays eligible, even if its refined replacement fails.
         const verified=accepted.filter(c=>(sampled.get(c.id)?.length||0)>0);
         const comparable=verified.length?verified:shortlist(4);
-        const commonIndices=verified.length?sampled.get(verified[0].id).map(row=>row.evidence.sampleIndex).filter(i=>verified.every(c=>sampled.get(c.id).some(row=>row.evidence.sampleIndex===i))):[];
+        const commonIndices=verified.length?sampled.get(verified[0].id).map(row=>row.evidence.sampleIndex).filter(i=>i<samples&&verified.every(c=>sampled.get(c.id).some(row=>row.evidence.sampleIndex===i))):[];
         for(const c of comparable) {
           if(commonIndices.length)updateRisk(c,commonIndices);else {c.score=c.nominalScore;c.evidence.aggregation={source:'common-nominal',finalScore:c.score};}
           c.evidence.comparison={basis:commonIndices.length?'common-shallow':'common-nominal',sampleIndices:commonIndices,shallowScore:c.score};
           const n=sampled.get(c.id)?.length||0;
-          c.risk={...c.risk,samples:n,comparedSamples:commonIndices.length,coverage:!samples||!skill?'disabled':n===samples?'complete':n?'partial':'unassessed'};
+          c.risk={...c.risk,samples:commonIndices.length,availableSamples:n,comparedSamples:commonIndices.length,coverage:!samples||!skill?'disabled':n>=samples?'complete':n?'partial':'unassessed'};
         }
         await stage('continuations',()=>continuations(comparable,commonIndices));
         for(const c of comparable)if(!c.evidence.aggregation)c.evidence.aggregation={source:'nominal',finalScore:c.score};
@@ -2732,7 +2814,7 @@ const PCOLSearch=(()=>{
         if(!comparable.length&&!['stale','cancelled'].includes(status))status='no-candidates';
         const sorted=durations.slice().sort((a,b)=>a-b),quantile=q=>sorted.length?Math.round(sorted[Math.min(sorted.length-1,Math.floor((sorted.length-1)*q))]):null;
         counts.trialMs={count:sorted.length,median:quantile(.5),p90:quantile(.9)};
-        const ranking=(a,b)=>Number(a.features?.mathematicallyDead)-Number(b.features?.mathematicallyDead)||b.score-a.score||Number(intentWorks(b))-Number(intentWorks(a));
+        const ranking=(a,b)=>Number(!!a.features?.mathematicallyDead)-Number(!!b.features?.mathematicallyDead)||b.score-a.score;
         comparable.sort(ranking);
         // Incomplete horizons are barriers, not zero-valued rivals. Reorder only adjacent
         // fully covered peers at the same depth, preserving the common shallow order elsewhere.
@@ -2744,6 +2826,16 @@ const PCOLSearch=(()=>{
           if(j-i>1){const peers=comparable.slice(i,j).sort((a,b)=>b.continuationScore-a.continuationScore);
             for(const c of peers)c.evidence.comparison.basis='common-bounded-horizon';comparable.splice(i,j-i,...peers);}
           i=j;
+        }
+        if(comparedPair.length===2&&comparedPair.every(c=>comparable.slice(0,2).includes(c))){
+          const indices=sampled.get(comparedPair[0].id).map(r=>r.evidence.sampleIndex).filter(i=>sampled.get(comparedPair[1].id).some(r=>r.evidence.sampleIndex===i));
+          // Do not replace a completed continuation comparison with a shallower one.
+          if(indices.length>commonIndices.length&&!comparedPair.every(c=>c.horizon==='covered')){
+            for(const c of comparedPair){const value=aggregate(sampled.get(c.id).filter(r=>indices.includes(r.evidence.sampleIndex)).map(r=>r.value));
+              c.evidence.pairedExecution={...value,sampleIndices:indices,peerId:comparedPair.find(p=>p!==c).id};}
+            const peers=comparedPair.slice().sort((a,b)=>Number(!!a.features?.mathematicallyDead)-Number(!!b.features?.mathematicallyDead)||b.evidence.pairedExecution.score-a.evidence.pairedExecution.score);
+            comparable.splice(0,2,...peers);for(const c of peers)c.evidence.comparison.basis='common-paired-execution';
+          }
         }
         const chosen=comparable[0],categoryBest={};
         // Next-visit plans do not affect this shot's score, coverage or ranking.
@@ -3024,7 +3116,7 @@ const PCOLMatchRecorder = (() => {
       });
     }
     return {
-      append:raw=>transaction('readwrite',(events,done)=>{const entry=JSON.parse(raw),request=events.add({id:entry.id,raw,synced:0});request.onsuccess=()=>done(request.result);}),
+      append:batch=>transaction('readwrite',events=>{for(const {id,raw} of batch)events.add({id,raw,synced:0});}),
       stats:()=>transaction('readonly',(events,done)=>{let saved,pending;const total=events.count(),waiting=events.index('synced').count(0);
         total.onsuccess=()=>{saved=total.result;if(pending!==undefined)done({saved,pending});};
         waiting.onsuccess=()=>{pending=waiting.result;if(saved!==undefined)done({saved,pending});};}),
@@ -3058,8 +3150,8 @@ const PCOLMatchRecorder = (() => {
       writing=(async()=>{
         await ready;
         while(writes.length){
-          const raw=writes[0];
-          try{await store.append(raw);writes.shift();queuedBytes-=raw.length;saved++;pending++;error=failed?'record_failed':null;notify();scheduleSync();}
+          const batch=writes.slice(0,40);
+          try{await store.append(batch);writes.splice(0,batch.length);queuedBytes-=batch.reduce((n,row)=>n+row.raw.length,0);saved+=batch.length;pending+=batch.length;error=failed?'record_failed':null;notify();scheduleSync();}
           catch(_){error='storage_failed';notify();break;}
         }
         return getStatus();
@@ -3092,7 +3184,7 @@ const PCOLMatchRecorder = (() => {
       let raw;try{raw=JSON.stringify(entry,compact?(key,value)=>key==='serial'?undefined:value:undefined);}catch(_){failed++;error='serialization';notify();return null;}
       // Bound only writes not yet committed, never the durable event history.
       if(writes.length>=4096||queuedBytes+raw.length>8*1024*1024){failed++;error='storage_busy';notify();return null;}
-      writes.push(raw);queuedBytes+=raw.length;if(kind==='stroke.end')lastStroke=entry.id;
+      writes.push({id:entry.id,raw});queuedBytes+=raw.length;if(kind==='stroke.end')lastStroke=entry.id;
       notify();if(!['storage_failed','storage_unavailable'].includes(error)||writing)void persist();return entry.id;
     }
     async function readPage(options){await persist();return store.readPage(options);}
@@ -3176,14 +3268,14 @@ const PCOLArena = (() => {
       if(series?.busy&&!seriesContext)throw new Error('Arena series is already running');
       if(!Array.isArray(players)||players.length!==2||players.some(p=>p.engine!=='local'))throw new Error('Arena requires two local AI participants');
       // Preserve the same execution settings for both seats.
-      if((players[0].skill||'strong')!==(players[1].skill||'strong')||(players[0].style||'balanced')!==(players[1].style||'balanced'))throw new Error('Arena requires matching skill and style');
-      const participants=players.map((p,seat)=>({...p,seat,provider:'local',skill:p.skill||'strong',style:p.style||'balanced'}));
+      if((players[0].skill||'strong')!==(players[1].skill||'strong'))throw new Error('Arena requires matching skill');
+      const participants=players.map((p,seat)=>({...p,seat,provider:'local',skill:p.skill||'strong',style:'unified'}));
       const current=job={cancelled:false,clients:[],snapshot:null,pending:copy(resumeFrom?.pending||null),shots:0,lastOutcome:copy(resumeFrom?.lastOutcome||null)};
       const random=randomFor(resumeFrom?.randomState??seed),limit=Math.max(1,Math.min(1000,Math.floor(Number(maxShots)||160)));
       const sharedBudget=Math.max(100,Math.min(65000,Number(budgetMs)||30000));
       let seat=0,decisionId=null,decisionSequence=0,turnId=null,strokeId=null,winner=null,reason=null;
       const emit=(kind,data={})=>recorder.event(kind,{mode:'arena',execution:'isolated-original-physics',seat,provider:participants[seat]?.provider,...data},{decisionId,turnId,strokeId,requestId:data.requestId});
-      const state=()=>({...getState(current.snapshot),skill:participants[seat].skill,style:participants[seat].style});
+      const state=()=>({...getState(current.snapshot),skill:participants[seat].skill,opponentSkill:participants[1-seat].skill,style:'unified'});
       const checkpoint=basis=>{
         const resume={snapshot:copy(current.snapshot),pending:copy(current.pending),randomState:random.state(),lastOutcome:copy(current.lastOutcome),
           activePlans:current.clients.map(client=>client.getPlan?.()||null),
@@ -3363,9 +3455,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.14.1";
+  const VERSION = "0.15.0";
   const DEVELOPMENT = true;
-  const BUILD_ID = "7c4c7fe85a0e";
+  const BUILD_ID = "5c1072db3a36";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -3566,8 +3658,10 @@ const PCOLArena = (() => {
     };
     }
     const resize = () => { if (s.panelPosition) positionPanel(s,s.panelPosition.x,s.panelPosition.y); };
+    const observer = new window.ResizeObserver(resize);
+    observer.observe(s.shadow.querySelector('.bar'));
     window.addEventListener('resize',resize);
-    patches.push(() => window.removeEventListener('resize',resize));
+    patches.push(() => {observer.disconnect();window.removeEventListener('resize',resize);window.cancelAnimationFrame(s.renderFrame);});
   }
   function mount(s) {
     if (s.host) return;
@@ -3603,6 +3697,10 @@ const PCOLArena = (() => {
     shadow.addEventListener('pointerdown', e => e.stopPropagation());
     render(s);
   }
+  function requestRender(s) {
+    if(s.renderFrame!=null)return;
+    s.renderFrame=window.requestAnimationFrame(()=>{s.renderFrame=null;if(s.host?.isConnected)render(s);});
+  }
   function render(s) {
     if (!s.host) mount(s);
     const live = s.app._currentController === s.g && s.g._model._gState !== 1;
@@ -3637,7 +3735,6 @@ const PCOLArena = (() => {
       s.shadow.querySelector('.mark').hidden=home;
     }
     if(s.editor){s.editor.setVisible(controlsVisible);if(controlsVisible)s.editor.update(editableBalls(s),s.placement?.selectedIndex ?? null,Boolean(s.placement));}
-    if ((live || home) && s.panelPosition && !s.shadow.querySelector('.bar').hidden) positionPanel(s,s.panelPosition.x,s.panelPosition.y);
   }
   function thinkingAllowed(s) {
     return s.modal ? s.modalKind==='annotation'&&!s.pausedBeforeModal : !s.g._paused;
@@ -4098,19 +4195,19 @@ const PCOLArena = (() => {
   }
   function showOpponent(s) {
     const fromHome=s.app._currentController===s.app._controllers.home;
-    const panel=dialog(s,'本地 AI 对局',fromHome?'选好击球准度与战术倾向，直接开局。':'调整击球准度与战术倾向，新设置用于后续选杆。',[]);
+    const panel=dialog(s,'本地 AI 对局',fromHome?'选择击球准度，直接开局。AI 根据球局自主比较进攻与防守。':'调整击球准度，新设置用于后续选杆。',[]);
     panel.classList.add('opponent-panel');panel.querySelector('.choices').remove();dismissiblePanel(s,panel);
     const summary=document.createElement('div');summary.className='ai-summary';
     summary.innerHTML='<div><strong>本地 AI</strong><small>根据球局比较进攻、走位、拆球与防守</small></div><span class="local-badge">本机选杆</span>';panel.append(summary);
-    const skillLabels={club:'俱乐部',strong:'高手',expert:'专家'},styleLabels={balanced:'综合判断',attacking:'偏重进攻',defensive:'偏重防守'};
-    const descriptions={club:'更宽的击球误差',strong:'适中的击球误差',expert:'更小的击球误差',balanced:'综合比较收益与风险',attacking:'更愿意冒险争取得分',defensive:'更重视失误后的机会'};
+    const skillLabels={club:'俱乐部',strong:'高手',expert:'专家'};
+    const descriptions={club:'更宽的击球误差',strong:'适中的击球误差',expert:'更小的击球误差'};
     const current=document.createElement('div');current.className='current-setting';current.setAttribute('aria-live','polite');
     const refresh=()=>{
-      current.textContent='当前设置：'+skillLabels[s.aiSettings.skill]+' · '+styleLabels[s.aiSettings.style];
+      current.textContent='当前准度：'+skillLabels[s.aiSettings.skill]+' · 自主战术判断';
       for(const b of panel.querySelectorAll('[data-setting]'))b.setAttribute('aria-pressed',String(s.aiSettings[b.dataset.setting]===b.dataset.value));
       render(s);
     };
-    for(const [key,label,caption,values] of [['skill','击球准度','只改变执行误差',skillLabels],['style','战术倾向','同一套搜索，不同取舍',styleLabels]]){
+    for(const [key,label,caption,values] of [['skill','击球准度','影响瞄准、力度和杆法稳定性',skillLabels]]){
       const section=document.createElement('section');section.className='setting-section';
       const heading=document.createElement('div');heading.className='section-heading';heading.innerHTML='<h3>'+label+'</h3><span>'+caption+'</span>';
       const group=document.createElement('div');group.className='setting-options';group.setAttribute('role','group');group.setAttribute('aria-label',label);
@@ -4121,7 +4218,7 @@ const PCOLArena = (() => {
       }section.append(heading,group);panel.append(section);
     }
     panel.append(current);
-    const note=document.createElement('div');note.className='note';note.textContent=fromHome?'默认高手准度与综合判断。对局中也可以调整。':'设置用于后续选杆，已经击出的球不受影响。';panel.append(note);
+    const note=document.createElement('div');note.className='note';note.textContent=fromHome?'默认高手准度。三档共用同一套战术判断，对局中也可以调整。':'设置用于后续选杆，已经击出的球不受影响。';panel.append(note);
     const footer=document.createElement('div');footer.className='settings-footer';
     const back=document.createElement('button');back.type='button';back.textContent=fromHome?'返回':'关闭设置';back.onclick=()=>closeModal(s);footer.append(back);
     const done=document.createElement('button');done.type='button';done.className='primary';done.textContent=fromHome?'开始对局 →':'继续对局';done.onclick=()=>{closeModal(s);if(fromHome)startEnhancedGame(s);};footer.append(done);panel.append(footer);
@@ -4329,8 +4426,8 @@ const PCOLArena = (() => {
     hookColourRespots(s);
     API.app = app;
     let trial = null, search = null, localAI = null;
-    s.aiSettings={skill:'strong',style:'balanced',engine:'local'};s.requestedEnhanced=false;
-    s.recorder=DEVELOPMENT?PCOLMatchRecorder.create({version:VERSION,onChange:()=>{if(s.host)render(s);}}):null;
+    s.aiSettings={skill:'strong',engine:'local'};s.requestedEnhanced=false;
+    s.recorder=DEVELOPMENT?PCOLMatchRecorder.create({version:VERSION,onChange:()=>{if(s.host)requestRender(s);}}):null;
     const getTrial = () => trial || (trial = PCOLTrial.create({game:g,factories:require.m,
       isReady:() => app._currentController===g && m._gState===4 && !s.shot && (!s.modal||s.modalKind==='annotation') && !s.placement && (!s.pending||s.turnManager?.getStatus().busy) && !s.conceded && !s.frameEnd,
       getRules:() => ({...m._gContext,nominatedColour:s.nominatedColour,nominationSource:s.nominationSource,freeBallNominee:s.freeBallNominee,
@@ -4353,7 +4450,7 @@ const PCOLArena = (() => {
       };
     const makeSearch = adapter => PCOLSearch.create({getTrial:()=>adapter||getTrial(),geometry:PCOLSearchGeometry,
       policy:PCOLTacticalPolicy,brain:PCOLTacticalBrain,skill:PCOLShotSkill,getState:getSearchState,development:PCOLDevelopment,
-      continuation:PCOLContinuation.create({geometry:PCOLSearchGeometry,policy:PCOLTacticalPolicy,core:PCOLCore,development:PCOLDevelopment})});
+      continuation:PCOLContinuation.create({geometry:PCOLSearchGeometry,policy:PCOLTacticalPolicy,core:PCOLCore,development:PCOLDevelopment,skill:PCOLShotSkill})});
     // The standalone localhost arena owns its controller; no new player logic runs on the original site.
     if(DEVELOPMENT && ['127.0.0.1','localhost'].includes(window.location.hostname) && new URLSearchParams(window.location.search).has('codexArena'))
       API.codexHost={version:VERSION,build:BUILD_ID,getTrial,makeSearch,getState:getSearchState,
@@ -4376,11 +4473,11 @@ const PCOLArena = (() => {
       turnOptions:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),
       createRecorder:PCOLMatchRecorder.create,createClient:PCOLLocalAI.create,createTurnManager:PCOLTurnManager.create});
     s.recordAIOutcome=result=>localAI?.recordOutcome(result);
-    s.getLocalAI = () => localAI || (localAI = PCOLLocalAI.create({getSearch,getTrial,onChange:()=>render(s),
+    s.getLocalAI = () => localAI || (localAI = PCOLLocalAI.create({getSearch,getTrial,onChange:()=>requestRender(s),
       onEvent:(kind,data)=>recordEvent(s,kind,data),
       getContext:()=>({ballOn:m._gContext.ballOn,playerIndex:m._gContext.playerIndex,nRounds:m._gContext.nRounds,scores:scores(m),
         nominatedColour:s.nominatedColour,freeBall:{available:s.freeBallAvailable,nominee:s.freeBallNominee},
-        style:s.aiSettings.style,lastOutcome:s.lastResult&&{actor:s.lastBefore?.context.playerIndex,round:m._gContext.nRounds,score:s.lastResult.score,foulCode:s.lastResult.foulCode},
+        skill:s.aiSettings.skill,lastOutcome:s.lastResult&&{actor:s.lastBefore?.context.playerIndex,round:m._gContext.nRounds,score:s.lastResult.score,foulCode:s.lastResult.foulCode},
         remainingPoints:PCOLCore.remainingPoints(balls(g),m._gContext.ballOn),breakScore:m._players[m._gContext.playerIndex]?.brk||0,
         balls:balls(g).filter(b=>b.active).map(b=>({i:b.i,n:b.n,x:b.x,z:b.z}))})}));
     s.getOpponent = () => s.opponent || (s.opponent = PCOLLocalOpponent.create({game:g,
@@ -4406,7 +4503,7 @@ const PCOLArena = (() => {
         m._gContext.playerIndex!==g._fpc.gPlayerIndex && !sim.getBalls().some(b=>b.active&&!b.asleep),
       canDeliver:()=>app._currentController===g && m._gState===4 && !g._paused && !s.modal && !s.pending && !s.conceded && !s.frameEnd &&
         !s.hotseat && m._gContext.playerIndex!==g._fpc.gPlayerIndex && !sim.getBalls().some(b=>b.active&&!b.asleep),
-      onChange:()=>render(s),onError:error=>localAIError(s,error)}));
+      onChange:()=>requestRender(s),onError:error=>localAIError(s,error)}));
     s.turnManager=PCOLTurnManager.create({getState:()=>getSearchState(getTrial().snapshot()),getPending:()=>s.pending,getTrial,
       options:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),geometry:PCOLSearchGeometry,
       policy:PCOLTacticalPolicy,skill:PCOLShotSkill,choose:request=>s.getLocalAI().chooseTurn(request),
@@ -4426,7 +4523,7 @@ const PCOLArena = (() => {
         recordEvent(s,'turn.choice',{kind,choiceId:choice.id,position:choice.position,nominee:choice.nominee,reason,source});
         s.log.push({kind:'ai-turn-choice',decision:kind,position:choice.position,freeBallNominee:s.freeBallNominee,reason});
         restartAI(s);
-      }),onError:error=>localAIError(s,error),onChange:()=>render(s)});
+      }),onError:error=>localAIError(s,error),onChange:()=>requestRender(s)});
     s.ensureAITurn=()=>{
       if(!s.opponent?.getStatus().enabled||s.hotseat||app._currentController!==g||m._gState!==4||!thinkingAllowed(s)||s.shot||s.conceded||s.frameEnd||m._gContext.playerIndex===g._fpc.gPlayerIndex)return false;
       if(s.turnManager.getStatus().busy||s.turnManager.getStatus().failed||s.afterAnnotation)return true;
