@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.14.0
+// @version      0.14.1
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -1292,9 +1292,21 @@ const PCOLSearchGeometry = (() => {
     return {nominatedColour:explicit>=2&&explicit<=7?explicit:target?.n>=2&&target.n<=7?target.n:2};
   }
   function refine(state,candidate) {
-    if(candidate.kind!=='attack'||!candidate.shot)return [];
-    return [[-.06,0],[.06,0],[-.03,-.5],[.04,-.5],[-.03,.5],[.04,.5]].map(([delta,vertical])=>({...candidate,
-      ...nomination(state,candidate.targetIndex),parentCandidateId:candidate.id,label:'进攻走位微调',shot:{...candidate.shot,power:Math.max(.08,Math.min(.85,candidate.shot.power+delta)),side:0,vertical,elevation:vertical<0?.025*Math.PI:0}}));
+    if(!candidate.shot)return [];
+    const boundary=candidate.executionBoundary,repairPower=boundary?.repairPower;
+    if(candidate.kind!=='attack')return Number.isFinite(repairPower)?[{...candidate,parentCandidateId:candidate.id,label:'到球力度修正',
+      executionRepair:{...boundary,referenceReachedPower:boundary.reachedPower},shot:{...candidate.shot,power:repairPower}}]:[];
+    // Compare adequate speed with stun, a modest draw and a deeper draw before
+    // reducing speed for position. Native outcomes decide which spin is useful.
+    const minimumDelta=Number.isFinite(repairPower)?Math.max(0,repairPower-candidate.shot.power):0,seen=new Set();
+    return [[Math.max(.06,minimumDelta),0],[Math.max(.10,minimumDelta),-.2],[Math.max(.12,minimumDelta),-.5],
+      [-.06,0],[.06,0],[-.03,-.5],[.04,-.5],[-.03,.5],[.04,.5]].flatMap(([delta,vertical],index)=>{
+      const power=Math.max(.08,Math.min(.85,candidate.shot.power+delta)),signature=[power,vertical].join(':');
+      if(seen.has(signature))return [];seen.add(signature);
+      return [{...candidate,...nomination(state,candidate.targetIndex),parentCandidateId:candidate.id,label:'进攻走位微调',
+        executionRepair:index<3&&boundary?{...boundary,referenceReachedPower:boundary.reachedPower}:undefined,
+        shot:{...candidate.shot,power,side:0,vertical,elevation:vertical<0?.025*Math.PI:0}}];
+    });
   }
   function multiBanks(state,cue,on) {
     const b=state.bounds;if(!b)return [];
@@ -1530,12 +1542,12 @@ const PCOLTacticalPolicy = (() => {
     const rules={...state.rules,...result.nextSnapshot?.rules,...result.nextContext};
     rules.ballOn=result.nextContext?.ballOn??result.nextSnapshot?.rules?.ballOn??verdict.nextBallOn??state.rules?.ballOn;
     const next={...state,balls:result.nextBalls||state.balls,rules};
-    const before=prepared?(prepared.root.before??=layout(state,geometry)):layout(state,geometry);
+    const before=prepared?(prepared.root.before??=(prepared.root.layout?prepared.root.layout(state):layout(state,geometry))):layout(state,geometry);
     // Classification retains declarations; evaluation clears them for the next turn.
     const sameNext=prepared&&next.balls===prepared.next.balls&&
       Object.keys(rules).every(k=>rules[k]===prepared.next.rules[k])&&
       Object.keys(prepared.next.rules).every(k=>rules[k]===prepared.next.rules[k]);
-    const after=sameNext?prepared.after:layout(next,geometry);
+    const after=sameNext?prepared.after:prepared?.root.layout?prepared.root.layout(next):layout(next,geometry);
     if(before.hasDirectHit===false&&after.hasDirectHit!==false)return 'escape';
     if(after.snookered===true)return 'snooker';
     if(after.bestQuality<.2&&after.pointValue<1)return 'contain';
@@ -1547,10 +1559,32 @@ const PCOLTacticalPolicy = (() => {
       scale:state.bounds?Math.hypot(state.bounds.maxX-state.bounds.minX,state.bounds.maxZ-state.bounds.minZ):2,
       blockersBefore:blockerResources(state),shadowBefore:geometry.shadowZones?geometry.shadowZones(state).length:0};
   }
-  // One immutable search root per closure; ordinary evaluate calls never cache mutable inputs.
+  // A session belongs to one bounded search. Ordinary evaluate calls still accept mutable inputs.
+  function createSession(geometry) {
+    const roots=new WeakMap(),layouts=new WeakMap();
+    // Both unset declaration forms are geometric equivalents; an actual nomination is distinct.
+    const sameRules=(a={},b={})=>[...new Set([...Object.keys(a),...Object.keys(b)])].every(k=>
+      a[k]===b[k]||['nominatedColour','freeBallNominee'].includes(k)&&a[k]==null&&b[k]==null);
+    function cachedLayout(state) {
+      const balls=state.balls;
+      if(!balls||typeof balls!=='object')return layout(state,geometry);
+      let entries=layouts.get(balls);
+      const cached=entries?.find(e=>e.bounds===state.bounds&&e.pockets===state.pockets&&sameRules(e.rules,state.rules));
+      if(cached)return cached.value;
+      const value=layout(state,geometry);
+      if(!entries){entries=[];layouts.set(balls,entries);}
+      entries.push({bounds:state.bounds,pockets:state.pockets,rules:state.rules,value});
+      return value;
+    }
+    return {layout:cachedLayout,evaluate(state,candidate,result){
+      let root=roots.get(state);
+      if(!root){root={...prepareRoot(state,geometry),layout:cachedLayout,results:new WeakMap()};roots.set(state,root);}
+      return evaluate(state,candidate,result,geometry,root);
+    }};
+  }
   function createEvaluator(state,geometry) {
-    let root;
-    return (candidate,result)=>evaluate(state,candidate,result,geometry,root??=prepareRoot(state,geometry));
+    const session=createSession(geometry);
+    return (candidate,result)=>session.evaluate(state,candidate,result);
   }
   function evaluate(state,candidate,result,geometry,preparedRoot) {
     const verdict=result.adjudication||{},points=Number.isFinite(verdict.score)?verdict.score:0;
@@ -1560,13 +1594,15 @@ const PCOLTacticalPolicy = (() => {
     nextRules.playerIndex=result.nextContext?.playerIndex??result.nextSnapshot?.rules?.playerIndex??(verdict.continueBreak?actor:1-actor);
     const stays=nextRules.playerIndex===root;
     const next={...state,balls:result.nextBalls||[],rules:{...nextRules,nominatedColour:null,freeBallNominee:null}};
-    const rootData=preparedRoot||prepareRoot(state,geometry),after=layout(next,geometry);
+    const rootData=preparedRoot||prepareRoot(state,geometry),facts=rootData.results?.get(result)||{};
+    if(rootData.results)rootData.results.set(result,facts);
+    const after=facts.after??=(rootData.layout?rootData.layout(next):layout(next,geometry));
     const {context,redIds,oldAccess,scale,blockersBefore,shadowBefore}=rootData;
-    const newAccess=accessibleReds(next,redIds,geometry);
+    const newAccess=facts.newAccess??=accessibleReds(next,redIds,geometry);
     const freedRedIds=[...newAccess].filter(i=>!oldAccess.has(i));
     // Fixed original-red denominator: a pot or red/colour phase change cannot inflate development.
     const development=(redIds.size?freedRedIds.length/redIds.size:0)*(1-after.buried)*(1-after.rail);
-    const effect=classify(state,candidate,result,geometry,{root:rootData,next,after,newAccess});
+    const effect=facts.effect??=classify(state,candidate,result,geometry,{root:rootData,next,after,newAccess});
     const difficulty=effect==='attack'?1-routeQuality(candidate,scale):0;
     const features={scoreDelta:points,objective:context.objective,style:context.style,routeDifficulty:difficulty,
       nextChance:stays?after.best:0,nextTargetIndex:stays?after.bestTargetIndex:null,
@@ -1593,22 +1629,24 @@ const PCOLTacticalPolicy = (() => {
     const mathematicallyDead=!terminal&&margin< -7&&live.length===1&&live[0].n===7;
     const cue=next.balls.find(b=>active(b)&&b.n===0),bounds=next.bounds;
     const cueBaulk=bounds&&cue?clamp(1-(cue.x-bounds.minX)/(bounds.maxX-bounds.minX)):0;
-    const displaced=(next.balls||[]).filter(b=>active(b)&&b.n>0&&state.balls.some(old=>old.i===b.i&&dist(old,b)>.02));
-    const legalIds=new Set(geometry.targets(next,next.rules.ballOn,null).map(b=>b.i));
-    const displacedLegal=displaced.filter(b=>legalIds.has(b.i));
-    const leakRoutes=!stays&&cue?geometry.attackRoutes(next,cue,displacedLegal):[];
-    const objectBallLeak=stays?0:leakRoutes.reduce((best,route)=>{
-      const target=displacedLegal.find(b=>b.i===route.targetIndex);
-      const proximity=target?Math.max(0,...(next.pockets||[]).map(p=>clamp(1-dist(target,p)/(.18*scale)))):0;
-      return Math.max(best,routeQuality(route,scale)*(1+proximity));
-    },0);
+    const displaced=facts.displaced??=(next.balls||[]).filter(b=>active(b)&&b.n>0&&state.balls.some(old=>old.i===b.i&&dist(old,b)>.02));
+    const objectBallLeak=facts.objectBallLeak??=(()=>{
+      const legalIds=new Set(geometry.targets(next,next.rules.ballOn,null).map(b=>b.i));
+      const displacedLegal=displaced.filter(b=>legalIds.has(b.i));
+      const leakRoutes=!stays&&cue?geometry.attackRoutes(next,cue,displacedLegal):[];
+      return stays?0:leakRoutes.reduce((best,route)=>{
+        const target=displacedLegal.find(b=>b.i===route.targetIndex);
+        const proximity=target?Math.max(0,...(next.pockets||[]).map(p=>clamp(1-dist(target,p)/(.18*scale)))):0;
+        return Math.max(best,routeQuality(route,scale)*(1+proximity));
+      },0);
+    })();
     const stillNeedsSnookers=Number.isFinite(remaining)&&-margin>remaining;
     const snookerGap=Number.isFinite(remaining)?Math.max(0,-margin-remaining):0;
     const shallowComeback=stillNeedsSnookers&&liveRedsAfter>=2&&snookerGap<=12&&(points>=5||(points===1&&stays&&after.best>=.25));
     const clinchAfter=Number.isFinite(remaining)&&margin>remaining;
     const clinchBonus=!verdict.foulCode&&clinchAfter&&netPoints>0?(context.snookersInHand?1.5:3.5):0;
     const recoveryCost=context.objective==='need-snookers'&&margin<0&&!shallowComeback?Math.max(0,removed-Math.max(0,netPoints)):0;
-    const shadowAfter=geometry.shadowZones?geometry.shadowZones(next).length:0;
+    const shadowAfter=facts.shadowAfter??=(geometry.shadowZones?geometry.shadowZones(next).length:0);
     const shadowDelta=clamp(shadowAfter/6)-clamp(shadowBefore/6);
     const lostObjects=(state.balls||[]).filter(b=>active(b)&&b.n>0&&!live.some(n=>n.i===b.i)).length;
     const resourceValue=stillNeedsSnookers&&!shallowComeback?(2*blockerDelta-4*lostObjects+6*shadowDelta)+(!stays&&after.snookered?6:0):
@@ -1703,7 +1741,7 @@ const PCOLTacticalPolicy = (() => {
     return candidates.every(poor)?finish('concede','weak-tested-recovery-and-scarce-blockers'):
       finish('continue','recovery-evidence-not-poor-enough');
   }
-  return {analyze,evaluate,createEvaluator,layout,estimate,classify,concession};
+  return {analyze,evaluate,createEvaluator,createSession,layout,estimate,classify,concession};
 })();
 
 /* Local geometric intentions; native trials establish achievement. */
@@ -1979,8 +2017,8 @@ const PCOLContinuation=(()=>{
       if(core?.touchingStatus){next.touching=core.touchingStatus({balls:next.balls,...rules});if(next.touching?.requiresColourDeclaration)return null;}
       return next;
     }
-    function seeds(state,count) {
-      const blocked=policy.layout(state,geometry).hasDirectHit===false;
+    function orderedSeeds(state,layout) {
+      const blocked=layout(state).hasDirectHit===false;
       const developed=development?.generate(state,geometry)||[];
       const pool=geometry.generate(state),attacks=pool.filter(c=>c.kind==='attack'&&!c.development);
       const merit=c=>((c.cut??1)**1.5)/(1+(c.travel||0))*(state.balls?.find(b=>b.i===(c.potTargetIndex??c.targetIndex))?.n||1);
@@ -1992,12 +2030,38 @@ const PCOLContinuation=(()=>{
       const seen=new Set(),first=[],rest=[];
       for(const seed of ordered){const key=geometry.routeKey?geometry.routeKey(seed):[seed.kind,seed.targetIndex,seed.pocketIndex,!!seed.development].join(':');
         if(seen.has(key))rest.push(seed);else{seen.add(key);first.push(seed);}}
-      return first.concat(rest).slice(0,count);
+      return first.concat(rest);
     }
-    async function evaluate({state,candidate,result,simulateFrom,canContinue=()=>true,maxTrials=6,depth:requestedDepth,breadth:requestedBreadth}) {
+    // Revisited first layers share immutable nodes and seed order within this search only.
+    function createSession({policySession}={}) {
+      const sharedPolicy=policySession||policy.createSession?.(geometry);
+      const nodes=new WeakMap(),seedLists=new WeakMap(),evaluators=new WeakMap(),rootStates=new WeakMap();
+      const layout=state=>sharedPolicy?sharedPolicy.layout(state):policy.layout(state,geometry);
+      function nextState(base,result) {
+        let children=nodes.get(base);
+        if(!children){children=new WeakMap();nodes.set(base,children);}
+        if(!children.has(result))children.set(result,settled(base,result));
+        return children.get(result);
+      }
+      function seeds(state,count) {
+        let list=seedLists.get(state);
+        if(!list){list=orderedSeeds(state,layout);seedLists.set(state,list);}
+        return list.slice(0,count);
+      }
+      function evaluatePolicy(state,candidate,result) {
+        if(sharedPolicy)return sharedPolicy.evaluate(state,candidate,result);
+        let evaluator=evaluators.get(state);
+        if(!evaluator){evaluator=policy.createEvaluator?.(state,geometry)||((c,r)=>policy.evaluate(state,c,r,geometry));evaluators.set(state,evaluator);}
+        return evaluator(candidate,result);
+      }
+    async function evaluate({state,candidate,result,preparedEvaluation,simulateFrom,canContinue=()=>true,maxTrials=6,depth:requestedDepth,breadth:requestedBreadth}) {
       const root=state.rootPlayerIndex??state.rules.playerIndex;
-      state={...state,rootPlayerIndex:root};
-      const original=policy.evaluate(state,candidate,result,geometry);
+      if(state.rootPlayerIndex==null){
+        let rooted=rootStates.get(state);
+        if(!rooted){rooted={...state,rootPlayerIndex:root};rootStates.set(state,rooted);}
+        state=rooted;
+      }
+      const original=preparedEvaluation||evaluatePolicy(state,candidate,result);
       const summary={mode:'unassessed',status:'unassessed',trials:0,completed:0,verifiedPath:[],coverage:'unknown',chainVerified:false,insuranceVerified:false,provenTerminalLoss:false,rootTerminalLoss:original.terminalValue<0,
         assessment:'bounded sampled branch; not evidence for every execution outcome'};
       let interrupted=false;
@@ -2005,7 +2069,7 @@ const PCOLContinuation=(()=>{
       const horizon=requestedDepth??(cap>=6?2:cap>0?1:0);
       summary.depth=horizon;
       async function visit(base,parent,depth) {
-        const next=settled(base,parent);if(!next||depth<=0)return null;
+        const next=nextState(base,parent);if(!next||depth<=0)return null;
         const maximise=next.rules.playerIndex===root,branches=[];
         const available=cap-summary.trials;
         // Compare siblings before spending the same bounded cap below a single route.
@@ -2017,8 +2081,8 @@ const PCOLContinuation=(()=>{
           const r=await simulateFrom(parent,seed);
           if(r?.status!=='complete'||!r.adjudication||!r.nextBalls){interrupted=true;continue;}
           summary.completed++;
-          const e=policy.evaluate(next,seed,r,geometry);
-          if(!e.terminalValue&&!settled(next,r)){interrupted=true;summary.adjudicationPending=true;}
+          const e=evaluatePolicy(next,seed,r);
+          if(!e.terminalValue&&!nextState(next,r)){interrupted=true;summary.adjudicationPending=true;}
           const potted=!r.adjudication.foulCode&&r.adjudication.score>0&&(r.potted||[]).some(i=>i===seed.targetIndex||i===seed.potTargetIndex);
           const cluster=seed.development?.clusterIds||[];
           const opened=cluster.some(i=>(e.features?.freedRedIds||[]).includes(i)&&(r.contacts||[]).some(c=>c.ballIndex===i));
@@ -2029,7 +2093,7 @@ const PCOLContinuation=(()=>{
           branches.push({value:e.score,path:[entry],r,e,terminalLoss:e.terminalValue<0});
         }
         branches.sort((a,b)=>maximise?b.value-a.value:a.value-b.value);
-        const expandable=branches.filter(branch=>!branch.e.terminalValue&&settled(next,branch.r));
+        const expandable=branches.filter(branch=>!branch.e.terminalValue&&nextState(next,branch.r));
         if(depth>1&&cap-summary.trials<expandable.length*(requestedBreadth??2)){interrupted=true;return branches[0]||null;}
         if(depth>1)for(const branch of expandable) {
           if(summary.trials>=cap||!canContinue()){interrupted=true;break;}
@@ -2040,7 +2104,7 @@ const PCOLContinuation=(()=>{
         branches.sort((a,b)=>maximise?b.value-a.value:a.value-b.value);
         return branches[0]||null;
       }
-      const next=settled(state,result);
+      const next=nextState(state,result);
       if(next&&result.adjudication&&!original.terminalValue) {
         summary.mode=next.rules.playerIndex===root?'continuation':'opponent-reply';
         const best=await visit(state,result,horizon);
@@ -2068,7 +2132,9 @@ const PCOLContinuation=(()=>{
       if(original.terminalValue){summary.status='complete';summary.coverage='covered';summary.provenTerminalLoss=original.terminalValue<0;}
       return {futureValue:original.futureValue,scoreDelta:0,shallowScore:original.score,comparableScore:original.score,horizonScore:original.terminalValue?original.score:null,summary};
     }
-    return {evaluate};
+      return {evaluate};
+    }
+    return {evaluate:options=>createSession({policySession:options.policySession}).evaluate(options),createSession};
   }
   return {create};
 })();
@@ -2317,7 +2383,7 @@ const PCOLSearch=(()=>{
     let active=null,lastResult=null;
     const stop=reason=>{if(active){active.reason=reason;if(active.inFlight)active.trial.cancel();}};
     function preparePlan(previous,context={}) {
-      const state=getState(getTrial().snapshot()),brief=brain.analyze(state,geometry),actor=state.rules.playerIndex;
+      const snapshot=getTrial().snapshot(),state=getState(snapshot),brief=brain.analyze(state,geometry),actor=state.rules.playerIndex;
       const planCompliance=brain.compliance(state,previous?.expectedNext,geometry),last=context.lastOutcome;
       let reason=!previous?'new-visit':previous.actor!==actor?'actor-changed':
         !last||last.actor!==actor||!(last.score>0)||last.foulCode?'turn-changed':
@@ -2328,7 +2394,7 @@ const PCOLSearch=(()=>{
       const continuedPlan=reason?null:{...previous,...brain.normalizePlan({primaryIntent:previous.expectedNext.intent,
         fallbackIntent:previous.fallbackIntent,reason:previous.reason},brief)};
       if(continuedPlan?.primaryIntent.task==='develop')reason='prepare-development';
-      return {brief,needsReplan:!!reason,reason,planCompliance,continuedPlan};
+      return {brief,preparedRoot:{fingerprint:JSON.stringify(snapshot),brief,style:state.style},needsReplan:!!reason,reason,planCompliance,continuedPlan};
     }
     async function run(options={}) {
       if(active)throw new Error('A candidate search is already running');
@@ -2347,17 +2413,19 @@ const PCOLSearch=(()=>{
       const samples=Math.floor(limit(options.riskSamples,2,0,6)),branchCap=Math.floor(limit(options.continuationTrials,6,0,12));
       const job=active={trial,inFlight:false,reason:null,phase:'routes'};
       const timer=setTimeout(()=>stop('budget-exhausted'),Math.max(0,deadline-performance.now()));
-      const accepted=[],cache=new Map(),outcomes=new Map(),sampled=new Map(),durations=[],stages=[];
-      const counts={generated:0,tried:0,completed:0,incomplete:0,rejected:0,reused:0,recovery:0,refined:0,development:0,riskTrials:0,branchTrials:0,reasons:{ruling:0,foul:0,miss:0}};
+      const accepted=[],cache=new Map(),outcomes=new Map(),evaluations=new Map(),sampled=new Map(),durations=[],stages=[];
+      const counts={generated:0,tried:0,completed:0,incomplete:0,rejected:0,reused:0,recovery:0,refined:0,development:0,riskTrials:0,boundaryTrials:0,branchTrials:0,reasons:{ruling:0,foul:0,miss:0}};
       const current=()=>{try{return JSON.stringify(trial.snapshot())===fingerprint;}catch(_){return false;}};
       const available=(reserve=0)=>!job.reason&&deadline-performance.now()>reserve;
-      const brief=brain?.analyze(state,geometry),plan=brain?brain.normalizePlan(options.plan||{},brief):null;
+      const prepared=options.preparedRoot;
+      const brief=brain&&(prepared&&!options.state&&prepared.fingerprint===fingerprint&&prepared.style===state.style?prepared.brief:brain.analyze(state,geometry)),plan=brain?brain.normalizePlan(options.plan||{},brief):null;
       const searchIntent={primaryIntent:plan?.primaryIntent,fallbackIntent:plan?.fallbackIntent,used:'primary',fallbackTriggered:false,reason:null};
       let activeIntent=plan?.primaryIntent;
       const intentWorks=c=>c.intentMet&&
         (!skill||!samples||(sampled.get(c.id)?.length||0)>=samples)&&
         !(sampled.get(c.id)||[]).some(row=>!row.evidence.legal||row.evidence.planCompliance?.intentMet===false);
-      const evaluatePolicy=policy?.createEvaluator?.(state,geometry);
+      const policySession=policy?.createSession?.(geometry);
+      const evaluatePolicy=policySession?((candidate,r)=>policySession.evaluate(state,candidate,r)):policy?.createEvaluator?.(state,geometry);
       const evaluate=(candidate,r,expectedNext=false)=>{
         const e=evaluatePolicy?evaluatePolicy(candidate,r):policy?policy.evaluate(state,candidate,r,geometry):geometry.evaluate(state,candidate,r);
         const assessment=brain&&candidate.intent?brain.assess(state,candidate,r,candidate.intent,geometry,brief,{expectedNext}):null;
@@ -2375,6 +2443,22 @@ const PCOLSearch=(()=>{
       const context=policy?.analyze(state);
       const styleRisk=state.style==='defensive'?.4:state.style==='attacking'?.08:.22;
       const riskPreference=Math.max(0,Math.min(.6,styleRisk+(context?.objective==='contain'?.12:context?.objective==='need-snookers'?-.08:0)));
+      const descriptor=c=>skill?.describe(state,c,options.skill||state.skill||'strong');
+      const powerWindow=c=>Math.sqrt(3)*(c.skill||descriptor(c))?.powerSigma||0;
+      const bufferedPower=(c,reachedPower,observedShortfall=0)=>{
+        let power=reachedPower;
+        for(let i=0;i<4;i++)power=reachedPower+Math.max(observedShortfall,powerWindow({...c,skill:null,shot:{...c.shot,power}}));
+        return Math.min(.85,power+1e-5);
+      };
+      const sameDirection=(a,b)=>a&&b&&Math.abs(Math.atan2(a.x*b.z-a.z*b.x,a.x*b.x+a.z*b.z))<=.006;
+      // The caller supplies only failures from this exact restored layout. Match the
+      // stroke as well, so a failure cannot contaminate another ball, pocket or spin.
+      const failuresFor=c=>(options.failureEvidence||[]).filter(f=>f.targetIndex===c.targetIndex&&
+        (f.nominatedColour||0)===(c.nominatedColour||0)&&
+        (c.kind!=='attack'||f.pocketIndex===c.pocketIndex)&&f.shot&&sameDirection(f.shot.direction,c.shot.direction)&&
+        Math.abs((f.shot.vertical||0)-(c.shot.vertical||0))<=.08&&
+        Math.abs(f.shot.power-c.shot.power)<=Math.max(.025,powerWindow(c))&&
+        ((f.result?.firstHits?.length===0)||(c.kind==='attack'&&!(f.result?.score>0))));
       async function simulate(shot,nomination,parent=null) {
         if(!available())return null;
         if(!current()){job.reason='stale';return null;}
@@ -2414,11 +2498,15 @@ const PCOLSearch=(()=>{
             effect=e.assessment.features.arrivalAligned?'position':'attack';
           const c={...seed,id:'shot-'+accepted.length,effect,expectedNext:e.assessment?.expectedNext,
             intentMet:e.assessment?.met??false,score:e.score,nominalScore:e.score,features:e.features,evidence:{nominal:{...evidence(r,e),planCompliance:e.assessment?.features},samples:[]},
-            skill:skill?.describe(state,seed,options.skill||state.skill||'strong'),stroke:r.stroke,actual:r.compiled?.actual,
+            skill:descriptor(seed),stroke:r.stroke,actual:r.compiled?.actual,
             outcome:{score:v.score,foulCode:v.foulCode,potted:r.potted,firstHits:r.firstHits,nextBallOn:v.nextBallOn,
               continueBreak:v.continueBreak,nominatedColour:rules.ballOn===252?v.ballOnUsed:rules.nominatedColour,
               cue:cue&&{x:cue.x,y:cue.y,z:cue.z},simulatedSeconds:r.simulatedSeconds}};
-          accepted.push(c);outcomes.set(c.id,r);
+          c.evidence.nominal.delivery={firstContactMade:r.firstHits?.includes(seed.targetIndex)??false,
+            targetPotted:!!r.potted?.some(i=>i===seed.targetIndex||i===seed.potTargetIndex)};
+          if(c.executionRepair)c.executionRepair={...c.executionRepair,lowErrorPower:Math.max(0,c.shot.power-powerWindow(c)),
+            goalVerified:c.kind==='attack'?c.evidence.nominal.delivery.targetPotted:c.evidence.nominal.delivery.firstContactMade};
+          accepted.push(c);outcomes.set(c.id,r);evaluations.set(c.id,e);
           if(stopAfterLegal)break;
         }
       }
@@ -2426,12 +2514,15 @@ const PCOLSearch=(()=>{
       function shortlist(count,fresh=false) {
         // This is a proposal queue, not a ranking of sampled and nominal values.
         const sorted=accepted.filter(c=>!fresh||(sampled.get(c.id)?.length||0)<samples).sort((a,b)=>b.nominalScore-a.nominalScore);
+        const preferred=new Map();
+        for(const c of sorted)if(c.executionRepair?.goalVerified&&!preferred.has(routeKey(c)))preferred.set(routeKey(c),c);
+        const proposed=[...new Set(sorted.map(c=>preferred.get(routeKey(c))||c))];
         const chosen=[],routes=new Set(),targets=new Set();
         const add=c=>{if(c&&chosen.length<count&&!routes.has(routeKey(c))){chosen.push(c);routes.add(routeKey(c));targets.add(c.targetIndex);}};
-        add(sorted[0]);add(sorted.find(c=>c.outcome.score>0));
-        add(sorted.find(c=>['snooker','contain'].includes(c.effect)));
-        for(const c of sorted)if(!targets.has(c.targetIndex))add(c);
-        for(const c of sorted)add(c);
+        add(proposed[0]);add(proposed.find(c=>c.outcome.score>0));
+        add(proposed.find(c=>['snooker','contain'].includes(c.effect)));
+        for(const c of proposed)if(!targets.has(c.targetIndex))add(c);
+        for(const c of proposed)add(c);
         // Once independent routes are covered, a refinement can challenge its parent.
         for(const c of sorted)if(chosen.length<count&&!chosen.includes(c))chosen.push(c);
         return chosen;
@@ -2449,7 +2540,7 @@ const PCOLSearch=(()=>{
         c.score=mean-riskPreference*effectiveDownside+twoWayBonus;
         c.features={...c.features,twoWay,safeMissRate:safeMisses/n,costlyMissRate:costlyMisses/n,twoWayBonus};
         c.evidence.samples=(sampled.get(c.id)||[]).map(r=>r.evidence);
-        c.evidence[indices?'comparisonExecution':'execution']={score:c.score,sampleCount:n,sampleIndices:rows.map(row=>row.evidence.sampleIndex),availableSamples:sampled.get(c.id).length,coverage:n>=samples?'complete':'partial'};
+        c.evidence[indices?'comparisonExecution':'execution']={score:c.score,sampleCount:n,sampleIndices:rows.map(row=>row.evidence.sampleIndex),availableSamples:sampled.get(c.id).length,coverage:n>=samples?'complete':'partial',sampleDesign:'common antithetic power +/-1 sigma, then uniform pairs'};
         c.evidence.aggregation={source:'execution-samples',mean,downside,effectiveDownside,twoWayBonus,riskPreference,finalScore:c.score};
         c.risk={...c.risk,samples:n,incomplete:sampled.get(c.id).incomplete||0,legalRate:rows.filter(r=>!r.result.adjudication.foulCode).length/n,
           potRate:rows.filter(r=>r.result.adjudication.score>0).length/n,foulRate:rows.filter(r=>r.result.adjudication.foulCode).length/n,
@@ -2461,19 +2552,22 @@ const PCOLSearch=(()=>{
         let randomState=0x6d2b79f5;
         const random=()=>{randomState=(Math.imul(randomState,1664525)+1013904223)>>>0;return(randomState+.5)/4294967296;};let draw=[];
         for(let n=0;n<samples&&available(reserve);n++) {
-          if(n%2===0)draw=[random(),random(),random()];const values=n%2?draw.map(x=>1-x):draw;
+          if(n%2===0){draw=[random(),random(),random()];if(n===0)draw[1]=.5-1/(2*Math.sqrt(3));}const values=n%2?draw.map(x=>1-x):draw;
           for(const c of finalists){if(!available(reserve)||counts.riskTrials>=samples*8)break;if(sampled.get(c.id)?.some(row=>row.evidence.sampleIndex===n))continue;let i=0;counts.riskTrials++;
             const r=await simulate(skill.perturb(c.shot,c.skill,()=>values[i++%3]),c.nominatedColour);
             const rows=sampled.get(c.id)||[];sampled.set(c.id,rows);
             if(r?.status!=='complete'||!r.adjudication||!r.nextBalls){rows.incomplete=(rows.incomplete||0)+1;continue;}
-            const e=evaluate(c,r,false);rows.push({result:r,value:e.score,features:e.features,evidence:{sampleIndex:n,...evidence(r,e),planCompliance:e.assessment?.features}});updateRisk(c);
+            const e=evaluate(c,r,false);rows.push({result:r,evaluated:e,value:e.score,features:e.features,evidence:{sampleIndex:n,powerUniformCoordinate:values[1],...evidence(r,e),
+              delivery:{firstContactMade:r.firstHits?.includes(c.targetIndex)??false,targetPotted:!!r.potted?.some(i=>i===c.targetIndex||i===c.potTargetIndex)},planCompliance:e.assessment?.features}});
+            if(n===0&&(!r.firstHits?.includes(c.targetIndex)||c.kind==='attack'&&!r.potted?.some(i=>i===c.targetIndex||i===c.potTargetIndex)))c.executionConcern={source:'sampled-low-power-failure'};
+            updateRisk(c);
           }
         }
       }
       async function continuations(finalists,commonIndices) {
         if(!continuation||typeof trial.simulateFrom!=='function'||!branchCap)return;
         // Preserve the old total ceiling (four finalists times branchCap), shared by the entire verified pool.
-        const commonSamples=commonIndices.length;
+        const commonSamples=commonIndices.length,continuationSession=continuation.createSession?.({policySession})||continuation;
         let remaining=4*branchCap;
         const branchCache=new Map();
         const trialBranch=async(parent,seed)=>{let hits=branchCache.get(parent);if(!hits){hits=new Map();branchCache.set(parent,hits);}const k=key(seed);if(hits.has(k))return hits.get(k);if(remaining<=0)return null;counts.branchTrials++;remaining--;const r=await simulate(seed.shot,seed.nominatedColour,parent);hits.set(k,r);return r;};
@@ -2481,10 +2575,10 @@ const PCOLSearch=(()=>{
         const capPerRoot=Math.min(branchCap,Math.floor(remaining/Math.max(1,roots)));
         for(const c of finalists) {
           c.shallowScore=c.score;
-          const rows=sampled.get(c.id),branches=commonSamples?rows.filter(row=>commonIndices.includes(row.evidence.sampleIndex)):[{result:outcomes.get(c.id),value:c.score,evidence:c.evidence.nominal}];
+          const rows=sampled.get(c.id),branches=commonSamples?rows.filter(row=>commonIndices.includes(row.evidence.sampleIndex)):[{result:outcomes.get(c.id),evaluated:evaluations.get(c.id),value:c.score,evidence:c.evidence.nominal}];
           for(let i=0;i<branches.length&&remaining>0&&available();i++) {
             const row=branches[i];
-            const planned=await continuation.evaluate({state,candidate:c,result:row.result,maxTrials:Math.min(capPerRoot,remaining),canContinue:()=>available(),
+            const planned=await continuationSession.evaluate({state,candidate:c,result:row.result,policySession,preparedEvaluation:row.evaluated,maxTrials:Math.min(capPerRoot,remaining),canContinue:()=>available(),
               simulateFrom:trialBranch});
             Object.assign(row.evidence,{branchDelta:planned.scoreDelta,scoreAfterBranches:row.value+planned.scoreDelta,continuation:planned.summary});
             if(i===0)c.plan={...planned.summary,source:commonSamples?'execution-sample':'nominal',sampleIndex:commonSamples?row.evidence.sampleIndex:null};
@@ -2509,9 +2603,9 @@ const PCOLSearch=(()=>{
           for(const c of ordered){
             if(probed>=2||remaining<(commonSamples||1)||!available())break;
             if(c.horizon!=='covered'||seen.has(routeKey(c)))continue;seen.add(routeKey(c));probed++;
-            const rows=sampled.get(c.id),branches=commonSamples?rows.filter(row=>commonIndices.includes(row.evidence.sampleIndex)):[{result:outcomes.get(c.id),value:c.score,evidence:c.evidence.nominal}];
+            const rows=sampled.get(c.id),branches=commonSamples?rows.filter(row=>commonIndices.includes(row.evidence.sampleIndex)):[{result:outcomes.get(c.id),evaluated:evaluations.get(c.id),value:c.score,evidence:c.evidence.nominal}];
             const probes=[];
-            for(const row of branches){const p=await continuation.evaluate({state,candidate:c,result:row.result,maxTrials:2,depth:2,breadth:1,canContinue:()=>available(),simulateFrom:trialBranch});
+            for(const row of branches){const p=await continuationSession.evaluate({state,candidate:c,result:row.result,policySession,preparedEvaluation:row.evaluated,maxTrials:2,depth:2,breadth:1,canContinue:()=>available(),simulateFrom:trialBranch});
               probes.push({...p,score:row.value+p.scoreDelta});}
             c.evidence.secondLayer=probes.map(p=>({score:p.score,summary:p.summary}));
             c.evidence.secondLayerComparison={basis:'diagnostic-only',reason:'second layer is not shared by the comparison pool'};
@@ -2520,16 +2614,38 @@ const PCOLSearch=(()=>{
       }
       async function softControls(reserveMs) {
         for(const seed of geometry.softContacts?.(state)||[]) {
-          let low=0,high=.28;
+          let low=0,high=.28,reached=false;
           // Native contact, not a distance-to-power guess, brackets the least force that reaches this ball.
           for(let i=0;i<3&&available(reserveMs)&&counts.tried<maxCandidates;i++) {
             const candidate={...seed,shot:{...seed.shot,power:(low+high)/2}};
             await explore([candidate],1,reserveMs);
             const r=cache.get(key(candidate));
-            if(r?.firstHits?.includes(seed.targetIndex))high=candidate.shot.power;
+            if(r?.firstHits?.includes(seed.targetIndex)){high=candidate.shot.power;reached=true;}
             else low=candidate.shot.power;
           }
+          if(reached&&skill&&available(reserveMs)&&counts.tried<maxCandidates){
+            const power=bufferedPower(seed,high),candidate={...seed,shot:{...seed.shot,power},
+              executionRepair:{source:'native-contact-bracket',failedPower:low,reachedPower:high,
+                lowErrorPower:power-powerWindow({...seed,shot:{...seed.shot,power}})}};
+            await explore([candidate],1,reserveMs);
+          }
         }
+      }
+      async function boundaryProbe(c,reserveMs) {
+        const window=powerWindow(c);if(!window||!available(reserveMs)||counts.tried>=maxCandidates)return;
+        const candidate={...c,shot:{...c.shot,power:Math.max(0,c.shot.power-window)}},k=key(candidate);
+        let r=cache.get(k);
+        if(r)counts.reused++;
+        else {counts.tried++;counts.generated++;counts.boundaryTrials++;r=await simulate(candidate.shot,c.nominatedColour);if(r?.status==='complete')cache.set(k,r);}
+        const settled=r?.status==='complete'&&r.adjudication&&r.nextBalls;
+        if(settled)counts.completed++;else counts.incomplete++;
+        const goal=settled&&!r.adjudication.foulCode&&(c.kind==='attack'?r.potted?.some(i=>i===c.targetIndex||i===c.potTargetIndex):r.firstHits?.includes(c.targetIndex));
+        c.evidence.robustness={basis:'isolated-power-support-boundary',status:settled?'complete':'incomplete',
+          testedPower:candidate.shot.power,goalVerified:!!goal,score:r?.adjudication?.score,foulCode:r?.adjudication?.foulCode,
+          firstHits:r?.firstHits,potted:r?.potted,interpretation:'boundary diagnostic, excluded from execution mean'};
+        if(settled&&!goal&&c.evidence.nominal.delivery[c.kind==='attack'?'targetPotted':'firstContactMade'])
+          c.executionBoundary={source:'native-power-boundary',failedPower:candidate.shot.power,reachedPower:c.shot.power,
+            repairPower:bufferedPower(c,c.shot.power)};
       }
       try {
         const useFixedReserve=budgetMs>=4000&&(skill&&samples>0||continuation);
@@ -2579,7 +2695,23 @@ const PCOLSearch=(()=>{
         if(!accepted.some(c=>!c.outcome.foulCode)&&geometry.generateRecovery&&available(reserve()))await stage('recovery',async()=>{const seeds=geometry.generateRecovery(state);counts.recovery=seeds.length;await explore(seeds,18,reserve());});
         if(!accepted.length&&geometry.generateRecovery&&available())await stage('multi-cushion-recovery',async()=>{const seeds=geometry.generateRecovery(state,{multiCushion:true});counts.recovery+=seeds.length;await explore(seeds,maxCandidates-counts.tried,0,true);});
         if(geometry.refine&&available(reserve('coverage')))await stage('refinement',async()=>{
-          const seeds=shortlist(3).flatMap(c=>geometry.refine(state,{...c,contacts:outcomes.get(c.id)?.contacts}));
+          const parents=[],routes=new Set();
+          for(const c of accepted.filter(c=>failuresFor(c).length).concat(shortlist(3))){
+            if(parents.length===3)break;if(routes.has(routeKey(c)))continue;parents.push(c);routes.add(routeKey(c));
+          }
+          for(const c of parents){
+            const failures=failuresFor(c),count=failures.reduce((sum,f)=>sum+Math.max(1,f.count||1),0);
+            if(count)c.evidence.restoredFailures={count,source:'same-layout-delivery',matching:'target, nomination, pocket and stroke'};
+            if(c.evidence.nominal.delivery[c.kind==='attack'?'targetPotted':'firstContactMade']&&
+              (c.kind==='attack'||c.softContact||count||c.executionConcern)&&!c.executionRepair)await boundaryProbe(c,reserve('coverage'));
+            const shortfall=Math.max(0,...failures.map(f=>f.shot.power-(f.actualShot?.power??f.shot.power)));
+            if(count>=2&&shortfall>0&&c.evidence.nominal.delivery[c.kind==='attack'?'targetPotted':'firstContactMade'])
+              c.executionBoundary={...c.executionBoundary,source:c.executionBoundary?.source||'repeated-delivery-failure',
+                reachedPower:c.shot.power,repairPower:bufferedPower(c,c.shot.power,shortfall),failureCount:count};
+          }
+          const groups=parents.map(c=>geometry.refine(state,{...c,contacts:outcomes.get(c.id)?.contacts})),seeds=[];
+          // Spend the existing twelve refinements across routes before second variants.
+          for(let i=0;i<Math.max(0,...groups.map(g=>g.length));i++)for(const group of groups)if(group[i])seeds.push(group[i]);
           counts.refined=seeds.length;await explore(seeds,12,reserve('coverage'));});
         const proposals=shortlist(4,true);
         await stage('risk',()=>risk(proposals,continuation?Math.min(5000,Math.max(0,deadline-performance.now())*.2):0));
@@ -2660,6 +2792,25 @@ const PCOLLocalAI = (() => {
   };
   function create({getSearch,getTrial,getContext,onEvent=()=>{},onChange=()=>{}}) {
     let activePlan=null,active=null,state={busy:false,phase:'idle',lastDecision:null};
+    let delivery=null,failurePosition=null,failures=[];
+    // A restored table changes the round and scores, but retains its geometry and legal targets.
+    const positionKey=snapshot=>JSON.stringify([snapshot.sceneId||null,
+      ...['ballOn','playerIndex','inHand','nominatedColour','freeBallNominee','freeBallAvailable','freeBallDeclined','respottedBlack'].map(k=>snapshot.rules?.[k]??null),
+      (snapshot.balls||[]).filter(b=>b.active!==false).slice().sort((a,b)=>a.i-b.i).map(b=>[b.i,b.n,b.x,b.y,b.z,b.r])]);
+    const failureEvidence=snapshot=>failurePosition===positionKey(snapshot)?structuredClone(failures):[];
+    function rememberDelivery(snapshot,candidate,actualShot) {
+      const position=positionKey(snapshot);
+      if(position!==failurePosition){failures=[];failurePosition=position;}
+      delivery=structuredClone({shot:candidate.shot,kind:candidate.kind,targetIndex:candidate.targetIndex,
+        pocketIndex:candidate.pocketIndex,nominatedColour:candidate.nominatedColour,actualShot});
+    }
+    function recordOutcome(result) {
+      const played=delivery;delivery=null;if(!played)return;
+      if(!result.foulCode&&(result.score>0||played.kind!=='attack')){failures=[];return;}
+      const evidence={...played,result:{score:result.score,foulCode:result.foulCode,firstHits:result.firstHits||[]},count:1};
+      failures.push(evidence);if(failures.length>8)failures.shift();
+      emit('execution.feedback',{...evidence,retained:failures.length});
+    }
     const emit=(kind,data)=>{try{onEvent(kind,round(data));}catch(_){}};
     const update=patch=>{state={...state,...patch};try{onChange({...state});}catch(_){}};
     const fingerprint=()=>JSON.stringify(getTrial().snapshot());
@@ -2697,7 +2848,8 @@ const PCOLLocalAI = (() => {
         const plan=continued?(preparation.continuedPlan||activePlan||defaultPlan):defaultPlan;
         const source=continued?'continued-plan':'local-plan',reason=preparation.reason||'';
         const planningElapsedMs=Date.now()-started;
-        search=await cancellable(job.search.run({...localOptions,fastPlan:continued,
+        const feedback=failureEvidence(getTrial().snapshot());
+        search=await cancellable(job.search.run({...localOptions,fastPlan:continued,preparedRoot:preparation.preparedRoot,failureEvidence:feedback,
           budgetMs:Math.max(1,Math.min(Number(options.budgetMs)||65000,65000,job.deadline-Date.now()-500)),plan}),job.controller.signal);
         emit('search.complete',{status:search.status,elapsedMs:search.elapsedMs,totalElapsedMs:Date.now()-started,budgetMs:search.budgetMs,counts:search.counts,stages:search.stages||search.counts,position:search.position,activePlan:search.activePlan,searchIntent:search.searchIntent,planCompliance:search.planCompliance,categoryBest:search.categoryBest,candidates:compact(search.candidates||[])});
         guard(job,before);
@@ -2739,7 +2891,9 @@ const PCOLLocalAI = (() => {
         emit('decision.failure',{kind,classification:error.code||'turn-failure',error:error.message});throw error;
       }finally{active=null;update({busy:false});}
     }
-    return {decide,chooseTurn,clearPlan:()=>{activePlan=null;},getPlan:()=>activePlan&&JSON.parse(JSON.stringify(activePlan)),setPlan:plan=>{activePlan=plan&&JSON.parse(JSON.stringify(plan));},cancel:()=>{
+    return {decide,chooseTurn,rememberDelivery,recordOutcome,failureEvidence,
+      resetExperience:()=>{delivery=null;failurePosition=null;failures=[];},
+      clearPlan:()=>{activePlan=null;},getPlan:()=>activePlan&&JSON.parse(JSON.stringify(activePlan)),setPlan:plan=>{activePlan=plan&&JSON.parse(JSON.stringify(plan));},cancel:()=>{
       if(!active)return;active.cancelled=true;active.controller.abort();active.search?.cancel();
     },getStatus:()=>({...state,lastDecision:state.lastDecision&&{...state.lastDecision}})};
   }
@@ -2844,56 +2998,121 @@ const PCOLMatchRecorder = (() => {
     return new Promise((resolve,reject)=>GM_xmlhttpRequest({url,method:'POST',headers:options.headers,data:options.body,anonymous:true,timeout:5000,
       onload:r=>resolve({ok:r.status>=200&&r.status<300,json:async()=>JSON.parse(r.responseText)}),onerror:()=>reject(new Error('unavailable')),ontimeout:()=>reject(new Error('timeout'))}));
   }
-  function create({version='',source='browser',onChange=()=>{},fetchImpl=localFetch}={}) {
-    let enabled=true,frameId=null,sequence=0,lastStroke=null,disposed=false,running=null,error=null,saved=0,dropped=0,checkpoint=null,lastDrop=null;
-    const outbox=[],dropReasons={oversize:0,outbox:0,serialization:0};
-    const session=Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);
-    const getStatus=()=>({enabled,frameId,session,pending:outbox.length,saved,dropped,error,status:error?'error':outbox.length?'pending':'saved'});
+  function createStore({name='pcol-match-recordings',indexedDBImpl=globalThis.indexedDB}={}) {
+    let opening=null;
+    function database() {
+      if(opening)return opening;
+      opening=new Promise((resolve,reject)=>{
+        if(!indexedDBImpl)return reject(new Error('storage_unavailable'));
+        const request=indexedDBImpl.open(name,1);
+        request.onupgradeneeded=()=>{
+          const events=request.result.createObjectStore('events',{keyPath:'key',autoIncrement:true});
+          events.createIndex('id','id',{unique:true});events.createIndex('synced','synced');
+        };
+        request.onsuccess=()=>resolve(request.result);
+        request.onerror=()=>reject(request.error||new Error('storage_unavailable'));
+      }).catch(error=>{opening=null;throw error;});
+      return opening;
+    }
+    async function transaction(mode,work) {
+      const db=await database();
+      return new Promise((resolve,reject)=>{
+        const tx=db.transaction('events',mode,mode==='readwrite'?{durability:'strict'}:undefined);let result;
+        tx.oncomplete=()=>resolve(result);
+        tx.onerror=tx.onabort=()=>reject(tx.error||new Error('storage_failed'));
+        work(tx.objectStore('events'),value=>{result=value;});
+      });
+    }
+    return {
+      append:raw=>transaction('readwrite',(events,done)=>{const entry=JSON.parse(raw),request=events.add({id:entry.id,raw,synced:0});request.onsuccess=()=>done(request.result);}),
+      stats:()=>transaction('readonly',(events,done)=>{let saved,pending;const total=events.count(),waiting=events.index('synced').count(0);
+        total.onsuccess=()=>{saved=total.result;if(pending!==undefined)done({saved,pending});};
+        waiting.onsuccess=()=>{pending=waiting.result;if(saved!==undefined)done({saved,pending});};}),
+      pending:limit=>transaction('readonly',(events,done)=>{const rows=[],request=events.index('synced').openCursor(0);request.onsuccess=()=>{
+        const cursor=request.result;if(!cursor||rows.length>=limit)return done(rows);rows.push(cursor.value);cursor.continue();};}),
+      acknowledge:key=>transaction('readwrite',(events)=>{const request=events.get(key);request.onsuccess=()=>{if(request.result)events.put({...request.result,synced:1});};}),
+      readPage:({after=0,limit=200}={})=>transaction('readonly',(events,done)=>{
+        const rows=[],size=Math.max(1,Math.min(500,Number(limit)||200)),request=events.openCursor(IDBKeyRange.lowerBound(Number(after)||0,true));
+        request.onsuccess=()=>{const cursor=request.result;
+          if(!cursor||rows.length>size){const page=rows.slice(0,size);return done({events:page.map(row=>JSON.parse(row.raw)),jsonl:page.map(row=>row.raw+'\n').join(''),nextCursor:page.at(-1)?.key||Number(after)||0,done:rows.length<=size});}
+          rows.push(cursor.value);cursor.continue();};
+      })
+    };
+  }
+  function create({version='',source='browser',onChange=()=>{},fetchImpl=localFetch,store=createStore()}={}) {
+    let enabled=true,frameId=null,sequence=0,lastStroke=null,disposed=false,writing=null,syncing=null,error=null,syncError=null,saved=0,pending=0,failed=0;
+    let queuedBytes=0,retryTimer=null,retryAt=0,retryDelay=5000;
+    const writes=[],session=Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);
+    const getStatus=()=>({enabled,frameId,session,saved,localSaved:saved,pending,saving:writes.length,failed,error,syncError,status:error?'error':writes.length?'saving':'saved'});
     const notify=()=>{try {onChange(getStatus());}catch(_) {}};
-    const entryFor=(kind,data,correlation={},frame=frameId)=>({schema:1,id:session+'_'+(++sequence),session,seq:sequence,source,frameId:frame,at:new Date().toISOString(),kind,data,
+    const entryFor=(kind,data,correlation={})=>({schema:1,id:session+'_'+(++sequence),session,seq:sequence,source,frameId,at:new Date().toISOString(),kind,data,
       ...Object.fromEntries(['turnId','decisionId','requestId','strokeId'].filter(key=>correlation[key]!=null).map(key=>[key,String(correlation[key])]))});
-    function drop(entry,reason){dropped++;dropReasons[reason]++;lastDrop={id:entry.id,seq:entry.seq,frameId:entry.frameId,kind:entry.kind,reason};}
-    function flush(reason='flush') {
-      if(reason && !checkpoint && frameId)checkpoint={frameId,reason};
-      if (running || disposed || (!outbox.length && !checkpoint)) return running || Promise.resolve(getStatus());
-      running=(async()=>{
-        while(!disposed) {
-          if(!outbox.length){
-            if(!checkpoint)break;
-            const point=checkpoint;checkpoint=null;
-            // Totals include this checkpoint once acknowledged; no events remain ahead of it.
-            outbox.push(JSON.stringify(entryFor('recorder.health',{reason:point.reason,session,saved:saved+1,pending:0,dropped,dropReasons:{...dropReasons},lastDrop,error,includesHealth:true},{},point.frameId)));
-          }
-          try {
-            const response=await fetchImpl('http://127.0.0.1:18763/record',{method:'POST',headers:{'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'},body:outbox[0]});
-            if(!response.ok){let code='record_failed';try{const body=await response.json();if(ERROR_CODES.has(body.error))code=body.error;}catch(_){}throw new Error(code);}
-            const recovered=!!error;
-            outbox.shift();saved++;error=null;
-            if(recovered && !checkpoint)checkpoint={frameId,reason:'recovery'};
-            notify();
-          }catch(failure) {error=ERROR_CODES.has(failure.message)?failure.message:failure.message==='timeout'?'timeout':'unavailable';notify();break;}
+    const ready=store.stats().then(stats=>{saved=stats.saved;pending=stats.pending;notify();scheduleSync();return getStatus();},()=>{error='storage_unavailable';notify();return getStatus();});
+    function scheduleSync() {
+      if(disposed||!pending||retryTimer)return;
+      retryTimer=setTimeout(()=>{retryTimer=null;void sync(false);},Math.max(0,retryAt-Date.now()));
+      retryTimer.unref?.();
+    }
+    function persist() {
+      if(writing)return writing;
+      writing=(async()=>{
+        await ready;
+        while(writes.length){
+          const raw=writes[0];
+          try{await store.append(raw);writes.shift();queuedBytes-=raw.length;saved++;pending++;error=failed?'record_failed':null;notify();scheduleSync();}
+          catch(_){error='storage_failed';notify();break;}
         }
         return getStatus();
-      })().finally(()=>{running=null;});
-      return running;
+      })().finally(()=>{writing=null;});
+      return writing;
+    }
+    function sync(force=false) {
+      if(syncing||disposed||(!force&&Date.now()<retryAt))return syncing||Promise.resolve(getStatus());
+      if(retryTimer){clearTimeout(retryTimer);retryTimer=null;}
+      syncing=(async()=>{
+        await ready;
+        try{
+          while(!disposed){
+            const batch=await store.pending(40);if(!batch.length)break;
+            for(const row of batch){
+              const response=await fetchImpl('http://127.0.0.1:18763/record',{method:'POST',headers:{'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'},body:row.raw});
+              if(!response.ok){let code='record_failed';try{const body=await response.json();if(ERROR_CODES.has(body.error))code=body.error;}catch(_){}throw new Error(code);}
+              await store.acknowledge(row.key);pending=Math.max(0,pending-1);syncError=null;retryAt=0;retryDelay=5000;notify();
+            }
+          }
+          const stats=await store.stats();saved=stats.saved;pending=stats.pending;
+        }catch(failure){syncError=ERROR_CODES.has(failure.message)?failure.message:failure.message==='timeout'?'timeout':'unavailable';retryAt=Date.now()+retryDelay;retryDelay=Math.min(60000,retryDelay*2);}
+        notify();return getStatus();
+      })().finally(()=>{syncing=null;scheduleSync();});
+      return syncing;
     }
     function event(kind,data={},correlation={}) {
-      if(!enabled || !frameId || disposed) return null;
-      const entry=entryFor(kind,data,correlation);
-      const compact=['decision.start','stroke.end'].includes(kind);
-      let raw;try{raw=JSON.stringify(entry,compact?(key,value)=>key==='serial'?undefined:value:undefined);}catch(_){drop(entry,'serialization');notify();return null;}
-      if(raw.length>60000){drop(entry,'oversize');notify();return null;}
-      while(outbox.length>=100 || outbox.reduce((sum,v)=>sum+v.length,0)+raw.length>1000000){const index=running?1:0;if(index>=outbox.length)break;drop(JSON.parse(outbox.splice(index,1)[0]),'outbox');}
-      outbox.push(raw);if(kind==='stroke.end')lastStroke=entry.id;
-      if(kind==='frame.end')checkpoint={frameId,reason:'frame.end'};
-      notify();void flush(null);return entry.id;
+      if(!enabled||!frameId||disposed)return null;
+      const entry=entryFor(kind,data,correlation),compact=['decision.start','stroke.end'].includes(kind);
+      let raw;try{raw=JSON.stringify(entry,compact?(key,value)=>key==='serial'?undefined:value:undefined);}catch(_){failed++;error='serialization';notify();return null;}
+      // Bound only writes not yet committed, never the durable event history.
+      if(writes.length>=4096||queuedBytes+raw.length>8*1024*1024){failed++;error='storage_busy';notify();return null;}
+      writes.push(raw);queuedBytes+=raw.length;if(kind==='stroke.end')lastStroke=entry.id;
+      notify();if(!['storage_failed','storage_unavailable'].includes(error)||writing)void persist();return entry.id;
+    }
+    async function readPage(options){await persist();return store.readPage(options);}
+    async function exportJSONL() {
+      const parts=[];let after=0;
+      while(true){const page=await readPage({after,limit:500});parts.push(page.jsonl);if(page.done)break;after=page.nextCursor;}
+      return new Blob(parts,{type:'application/x-ndjson;charset=utf-8'});
+    }
+    async function download() {
+      const blob=await exportJSONL(),url=URL.createObjectURL(blob),link=document.createElement('a');
+      link.href=url;link.download='pcol-matches-'+new Date().toISOString().slice(0,10)+'.jsonl';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      return {saved,bytes:blob.size};
     }
     return {startFrame(meta={}){frameId=session+'_'+(++sequence);lastStroke=null;event('frame.start',{version,...meta});return frameId;},
       event,endFrame(summary={}){return event('frame.end',summary);},mark(label,extra={}){return event('mark',{label,strokeId:lastStroke,...extra},{strokeId:lastStroke});},
-      context:()=>({frameId,session,enabled}),setEnabled(value){enabled=!!value;notify();},getStatus,flush,
-      dispose(){disposed=true;outbox.length=0;checkpoint=null;notify();}};
+      context:()=>({frameId,session,enabled}),setEnabled(value){enabled=!!value;notify();},getStatus,ready,readPage,exportJSONL,download,
+      async flush(){await persist();return sync(true);},
+      dispose(){disposed=true;if(retryTimer)clearTimeout(retryTimer);return persist();}};
   }
-  return {create};
+  return {create,createStore};
 })();
 
 /* Developer-only, bounded decisions from saved settled positions. Never executes live shots. */
@@ -3144,9 +3363,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.14.0";
+  const VERSION = "0.14.1";
   const DEVELOPMENT = true;
-  const BUILD_ID = "6a0fc750a7de";
+  const BUILD_ID = "7c4c7fe85a0e";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -3412,8 +3631,8 @@ const PCOLArena = (() => {
     aiButton.textContent=home?'与 AI 对局':'本地 AI · '+phase;
     aiButton.title=opponent?.error || '调整本地 AI 的击球准度与战术倾向';
     if(DEVELOPMENT){const r=s.recorder?.getStatus();
-      s.shadow.querySelector('.recording').textContent='记录 · '+(!r?.enabled?'已暂停':r.error?'待保存':r.pending?'保存中':'开启');
-      s.shadow.querySelector('.recording').title=r?`已保存 ${r.saved}，待保存 ${r.pending}，丢弃 ${r.dropped}`:'';
+      s.shadow.querySelector('.recording').textContent='记录 · '+(!r?.enabled?'已暂停':r.error?'保存失败':r.saving?'保存中':'本机已保存');
+      s.shadow.querySelector('.recording').title=r?`本机累计已保存 ${r.localSaved}，待同步 ${r.pending}，正在保存 ${r.saving}`:'';
       s.shadow.querySelector('.mark').disabled=!s.lastBefore;
       s.shadow.querySelector('.mark').hidden=home;
     }
@@ -3703,6 +3922,7 @@ const PCOLArena = (() => {
     syncResponse(s);
   }
   function recordCompletedStroke(s, shot, result) {
+    if(shot.localAI)s.recordAIOutcome?.(result);
     s.lastTrace=shot.trace;s.lastContacts=shot.contacts;s.lastBefore=shot.before;s.lastResult=result;
     if (s.practice) s.practiceBefore=shot.before;
     if (s.practice==='custom') s.practiceControlsHidden=false;
@@ -3909,14 +4129,15 @@ const PCOLArena = (() => {
   }
   function showRecording(s) {
     const r=s.recorder.getStatus();
-    const message=!r.enabled?'自动记录已暂停。':r.error?'记录尚未写入磁盘，请启动本地记录服务后重试。':'自动记录球局、选杆与结果，供赛后复盘。';
+    const message=r.error?(r.failed?`本次有 ${r.failed} 条记录未能保存；已保存记录可导出。`:'本机保存失败，请保留页面并重试。'):!r.enabled?'自动记录已暂停。':r.pending?'已保存在当前浏览器；本地服务恢复后会自动补同步。':'自动记录球局、选杆与结果，保存在当前浏览器。';
     const panel=dialog(s,'比赛记录',message,[]);panel.querySelector('.choices').remove();dismissiblePanel(s,panel);
     const grid=document.createElement('div');grid.className='record-grid';
-    for(const [label,value] of [['已保存',r.saved],['待保存',r.pending],['未保存',r.dropped]]){const stat=document.createElement('div');stat.className='record-stat';stat.innerHTML='<strong>'+value+'</strong><span>'+label+'</span>';grid.append(stat);}panel.append(grid);
-    const note=document.createElement('div');note.className='note';note.textContent='记录留在本机。无需逐杆标注；有疑问时可用“标记上一杆”，保留该杆现场。';panel.append(note);
+    for(const [label,value] of [['本机累计已保存',r.localSaved],['待同步',r.pending],['正在保存',r.saving]]){const stat=document.createElement('div');stat.className='record-stat';stat.innerHTML='<strong>'+value+'</strong><span>'+label+'</span>';grid.append(stat);}panel.append(grid);
+    const note=document.createElement('div');note.className='note';note.textContent='无需启动服务即可保存和导出。刷新页面后记录仍在；清除网站数据会删除浏览器记录。';panel.append(note);
     const footer=document.createElement('div');footer.className='settings-footer';
     const toggle=document.createElement('button');toggle.type='button';toggle.textContent=r.enabled?'暂停记录':'开启记录';toggle.setAttribute('aria-pressed',String(r.enabled));toggle.onclick=()=>{s.recorder.setEnabled(!r.enabled);showRecording(s);};footer.append(toggle);
-    const retry=document.createElement('button');retry.type='button';retry.textContent='重试保存';retry.disabled=!r.pending&&!r.error;retry.onclick=async()=>{retry.disabled=true;await s.recorder.flush();if(panel.isConnected)showRecording(s);};footer.append(retry);
+    const exportButton=document.createElement('button');exportButton.type='button';exportButton.textContent='导出 JSONL';exportButton.onclick=async()=>{exportButton.disabled=true;try{await s.recorder.download();}catch(_){note.textContent='导出失败，请重试。';}finally{exportButton.disabled=false;}};footer.append(exportButton);
+    const retry=document.createElement('button');retry.type='button';retry.textContent='重试保存与同步';retry.disabled=!r.pending&&!r.error;retry.onclick=async()=>{retry.disabled=true;await s.recorder.flush();if(panel.isConnected)showRecording(s);};footer.append(retry);
     const done=document.createElement('button');done.type='button';done.className='primary';done.textContent='完成';done.onclick=()=>closeModal(s);footer.append(done);panel.append(footer);done.focus();
   }
   function resetTurn(s) { s.afterAnnotation=null;s.turnManager?.cancel();s.aiPreparedMark=null;s.preparedShot=null;s.nominatedColour = null; s.nominationSource = null; s.freeBallNominee = null; s.freeBallAvailable = false; s.freeBallReview = false; s.freeBallDeclined = false; s.aiTarget = null; }
@@ -4154,6 +4375,7 @@ const PCOLArena = (() => {
       capture:()=>({snapshot:getTrial().snapshot()}),skill:PCOLShotSkill,core:PCOLCore,geometry:PCOLSearchGeometry,policy:PCOLTacticalPolicy,
       turnOptions:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),
       createRecorder:PCOLMatchRecorder.create,createClient:PCOLLocalAI.create,createTurnManager:PCOLTurnManager.create});
+    s.recordAIOutcome=result=>localAI?.recordOutcome(result);
     s.getLocalAI = () => localAI || (localAI = PCOLLocalAI.create({getSearch,getTrial,onChange:()=>render(s),
       onEvent:(kind,data)=>recordEvent(s,kind,data),
       getContext:()=>({ballOn:m._gContext.ballOn,playerIndex:m._gContext.playerIndex,nRounds:m._gContext.nRounds,scores:scores(m),
@@ -4172,6 +4394,7 @@ const PCOLArena = (() => {
       prepareCandidate:candidate=>{
         const shot=PCOLShotSkill.perturb(candidate.shot,candidate.skill);
         const compiled=getTrial().compile(shot);
+        s.getLocalAI().rememberDelivery(getTrial().snapshot(),candidate,shot);
         recordEvent(s,'stroke.prepared',{candidateId:candidate.id,targetIndex:candidate.targetIndex,
           nominalShot:candidate.shot,actualShot:shot,stroke:compiled.stroke,expected:candidate.outcome,risk:candidate.risk});
         return {...candidate,shot,stroke:compiled.stroke,actual:compiled.actual};
@@ -4224,7 +4447,7 @@ const PCOLArena = (() => {
       cancel:()=>{s.afterAnnotation=null;s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();},
       getStatus:()=>({...(localAI?.getStatus()||{busy:false,phase:'idle'}),turn:s.turnManager.getStatus(),settings:{...s.aiSettings},opponent:s.opponent?.getStatus()||{enabled:false}})};
     if(DEVELOPMENT)API.recording={getStatus:()=>s.recorder.getStatus(),setEnabled:v=>s.recorder.setEnabled(v),
-      flush:()=>s.recorder.flush(),mark:label=>markStroke(s,label)};
+      flush:()=>s.recorder.flush(),readPage:options=>s.recorder.readPage(options),exportJSONL:()=>s.recorder.exportJSONL(),download:()=>s.recorder.download(),mark:label=>markStroke(s,label)};
     s.getOpponent().setEnabled(false);
     patches.push(() => {API.arena?.cancel();endRecordFrame(s,'uninstalled');s.recorder?.flush();s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();search?.cancel();trial?.dispose();});
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
@@ -4278,7 +4501,7 @@ const PCOLArena = (() => {
     });
     wrap(m, 'asyncLaunch', original => function (ready) {
       endRecordFrame(s,'restarted');
-      localAI?.clearPlan();s.lastResult=null;s.lastBefore=null;s.aiConcessionMark=null;
+      localAI?.clearPlan();localAI?.resetExperience();s.lastResult=null;s.lastBefore=null;s.aiConcessionMark=null;
       s.hotseat = s.requestedHotseat;
       s.requestedHotseat = false;
       s.getOpponent().setEnabled(s.requestedEnhanced);s.requestedEnhanced=false;
@@ -4343,7 +4566,7 @@ const PCOLArena = (() => {
       }
       const before = takeSnapshot(s);
       const accepted = original.call(this, player);
-      if (accepted) { s.celebration.clear(); s.concessionTurn = null; s.shot = { before, trace: [], contacts: [], physical: false, touchWatches:new Map(before.touching.indices.map(i=>[i,{initial:true}])), pushedTouching:[] };
+      if (accepted) { s.celebration.clear(); s.concessionTurn = null; s.shot = { before, trace: [], contacts: [], physical: false, localAI:player!==g._fpc.gPlayerIndex&&!s.hotseat&&!!s.opponent?.getStatus().enabled, touchWatches:new Map(before.touching.indices.map(i=>[i,{initial:true}])), pushedTouching:[] };
         if(DEVELOPMENT){recordTurn(s);s.shot.recordStarted=performance.now();
           s.shot.recordController=player===g._fpc.gPlayerIndex||s.hotseat?'human':s.opponent?.getStatus().enabled?s.aiSettings.engine:'original';
           s.shot.recordId=recordEvent(s,'stroke.start',{
@@ -4392,7 +4615,7 @@ const PCOLArena = (() => {
     });
     wrap(m, '_onResetResponse', original => function (...args) {
       endRecordFrame(s,'restarted');
-      s.opponent?.reset();localAI?.cancel();localAI?.clearPlan();
+      s.opponent?.reset();localAI?.cancel();localAI?.clearPlan();localAI?.resetExperience();
       if(s.placement)finishPracticeEditor(s,false);
       s.practiceControlsHidden=false;
       s.celebration.clear();
