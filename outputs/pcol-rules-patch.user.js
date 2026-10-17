@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.15.1
+// @version      0.15.4
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -1990,12 +1990,13 @@ const PCOLTacticalBrain=(()=>{
 if(typeof module!=='undefined'&&module.exports)module.exports=PCOLTacticalBrain;
 
 
-/* Heuristic human execution uncertainty, not professionally calibrated data.
+/* Execution uncertainty calibrated against a fixed native-physics practice shot,
+ * not a measured professional-player skill distribution.
  * describe is deterministic. perturb draws three uniform samples once and
  * returns a coherent native-compatible shot; search and delivery share it.
  */
 const PCOLShotSkill = (() => {
-  const profiles={club:{angle:.002052,power:.01728,vertical:.0324},strong:{angle:.000918,power:.00972,vertical:.0216},expert:{angle:.000432,power:.0054,vertical:.01296}};
+  const profiles={club:{angle:.01026,power:.01728,vertical:.0324},strong:{angle:.0010098,power:.00972,vertical:.0216},expert:{angle:.00053568,power:.0054,vertical:.01296}};
   const clamp=(v,lo,hi)=>Math.max(lo,Math.min(hi,v));
   const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
   function describe(state,candidate,level='strong') {
@@ -2020,8 +2021,8 @@ const PCOLShotSkill = (() => {
       verticalSigma:profile.vertical*(1+power+rail)};
   }
   function perturb(shot,descriptor,random=Math.random) {
-    // Uniform zero-mean error with the requested standard deviation. Direction
-    // error is smaller than speed/spin error so positional mistakes dominate.
+    // Uniform zero-mean error with the requested standard deviation.
+    // Angular accuracy is independent of the power and spin error profiles.
     const sample=sigma=>(clamp(random(),0,1)*2-1)*Math.sqrt(3)*sigma;
     const angle=Math.atan2(shot.direction.z,shot.direction.x)+sample(descriptor.angleSigma);
     const power=clamp(shot.power+sample(descriptor.powerSigma),0,1);
@@ -3570,9 +3571,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.15.1";
+  const VERSION = "0.15.4";
   const DEVELOPMENT = true;
-  const BUILD_ID = "5bef9c09216c";
+  const BUILD_ID = "783e616edf7f";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
