@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.15.0
+// @version      0.15.1
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -16,6 +16,65 @@
 (() => {
 const window = typeof unsafeWindow === "undefined" ? globalThis.window : unsafeWindow;
 const {Math,Number,Array,Object,Set,Map,WeakMap,WeakSet,JSON,Reflect,Float32Array,Float64Array,Uint8Array,Uint32Array,ArrayBuffer,DataView,String,Boolean,Date,Promise,Error,TypeError,RangeError,Infinity,NaN,performance,structuredClone}=globalThis;
+/* Per-stroke Float64 trajectory. Native ball identity/radius are immutable;
+ * every physics/contact sample retains position and active state unchanged.
+ * Object rows are materialized only for explicit external trace exports. */
+const PCOLShotTrace = (() => {
+  function create(nativeBalls, {cap = 15000, seconds = false, chunkSize = 128} = {}) {
+    const metadata = nativeBalls.map(b => ({i:b.index,n:b.number,r:b.radius}));
+    const slots = new Map();
+    for(let i=0;i<metadata.length;i++)if(!slots.has(metadata[i].i))slots.set(metadata[i].i,i);
+    const stride = 1 + 4*metadata.length, chunks = [];
+    const last = {t:0,x:0,y:0,z:0};
+    let length = 0;
+    function sample(balls, time) {
+      if(length >= cap)return null;
+      const chunkIndex = Math.floor(length/chunkSize), offset = (length%chunkSize)*stride;
+      let data = chunks[chunkIndex];
+      if(!data)data=chunks[chunkIndex]=new Float64Array(Math.min(chunkSize,cap-chunkIndex*chunkSize)*stride);
+      data[offset]=time;
+      for(let i=0;i<metadata.length;i++) {
+        const b=balls[i],p=b.position,k=offset+1+i*4;
+        data[k]=p.x;data[k+1]=p.y;data[k+2]=p.z;data[k+3]=b.active===false?0:1;
+      }
+      last.t=length++;last.x=data[offset+1];last.y=data[offset+2];last.z=data[offset+3];
+      return last;
+    }
+    function readCue(index, out = {}) {
+      const data=chunks[Math.floor(index/chunkSize)],offset=(index%chunkSize)*stride;
+      out.t=index;out.x=data[offset+1];out.y=data[offset+2];out.z=data[offset+3];
+      if(seconds)out.seconds=data[offset];
+      return out;
+    }
+    function readBall(index, fallback, out = {}) {
+      const slot=slots.get(fallback.i);
+      if(slot===undefined){Object.assign(out,fallback);out.active=false;return out;}
+      const data=chunks[Math.floor(index/chunkSize)],offset=(index%chunkSize)*stride+1+slot*4;
+      const m=metadata[slot];
+      out.i=m.i;out.n=m.n;out.r=m.r;
+      out.x=data[offset];out.y=data[offset+1];out.z=data[offset+2];out.active=data[offset+3]!==0;
+      return out;
+    }
+    function toArray() {
+      const rows=new Array(length);
+      for(let i=0;i<length;i++) {
+        const row=readCue(i);
+        row.balls=metadata.map(b=>readBall(i,b));rows[i]=row;
+      }
+      return rows;
+    }
+    function toCueArray() {
+      const rows=new Array(length),point={};
+      for(let i=0;i<length;i++) {
+        readCue(i,point);rows[i]={t:point.t,x:point.x,z:point.z};
+      }
+      return rows;
+    }
+    return {get length(){return length;},sample,readCue,readBall,toArray,toCueArray,toJSON:toArray};
+  }
+  return {create};
+})();
+
 /* PCOL rule helpers. x/z are cloth coordinates; y is height. No game mutation.
  * WPBSA 2024-25: definitions 17/20, play 3/4/7/8/11/12.
  * https://wpbsa.com/wp-content/uploads/2198_WPBSA-Rulebook-2024-25.pdf
@@ -257,13 +316,29 @@ const PCOLCore = (() => {
     const found = indexed && Number.isInteger(b.i) && b.i>=0 && b.i<sample.balls.length ? sample.balls[b.i] : sample.balls.find(v => v.i === b.i);
     return found || {...b,active:false};
   }
-  function ballAt(trace, b, t, indexedRows) {
+  function traceReader(trace) {
+    if(typeof trace.readCue==='function' && typeof trace.readBall==='function')
+      return {length:trace.length,cue:(k,out)=>trace.readCue(k,out),ball:(k,b,out)=>trace.readBall(k,b,out),hasBalls:()=>true};
+    // Validate legacy object rows locally. Non-indexed/duplicate IDs retain
+    // the original first-match lookup and missing-ball behavior.
+    const indexedRows=new Uint8Array(trace.length);
+    for(let k=0;k<trace.length;k++) {
+      const row=trace[k].balls;
+      if(!row)continue;
+      let indexed=true;
+      for(let i=0;i<row.length;i++)if(!row[i] || row[i].i!==i){indexed=false;break;}
+      if(indexed)indexedRows[k]=1;
+    }
+    return {length:trace.length,cue:k=>trace[k],ball:(k,b)=>sampleBall(trace[k],b,indexedRows[k]),hasBalls:k=>!!trace[k].balls};
+  }
+  function ballAt(reader, b, t) {
+    const a={},next={},objectA={},objectB={};
     let j = 0;
-    while (j + 1 < trace.length && trace[j + 1].t < t) j++;
-    if (j + 1 === trace.length) return sampleBall(trace[j], b, indexedRows[j]);
-    const a = trace[j], next = trace[j+1];
-    const u = Math.max(0, Math.min(1, (t-a.t) / (next.t-a.t || 1)));
-    return lerp(sampleBall(a,b,indexedRows[j]),sampleBall(next,b,indexedRows[j+1]),u);
+    while (j + 1 < reader.length && reader.cue(j+1,next).t < t) j++;
+    if (j + 1 === reader.length) return reader.ball(j,b,objectA);
+    const current=reader.cue(j,a),following=reader.cue(j+1,next);
+    const u = Math.max(0, Math.min(1, (t-current.t) / (following.t-current.t || 1)));
+    return lerp(reader.ball(j,b,objectA),reader.ball(j+1,b,objectB),u);
   }
 
   // Relative swept-disc overlap, retaining only points with the cue above
@@ -303,7 +378,8 @@ const PCOLCore = (() => {
    */
   function evaluateJump(trace, ballsAtStart, contactEvents = [], fallbackRadius = RADIUS) {
     if (!trace || trace.length < 2) return {foul:false, offendingBalls:[], reason:'Insufficient trajectory.', indeterminate:true, details:[]};
-    const cue = ballsAtStart.find(b => b.n === 0) || {r:fallbackRadius,...trace[0]};
+    const reader=traceReader(trace);
+    const cue = ballsAtStart.find(b => b.n === 0) || {r:fallbackRadius,...reader.cue(0,{})};
     const rc = radius(cue,fallbackRadius), eps = Math.max(1e-6,rc*0.002);
     const groundY = cue.y;
     const events = contactEvents.slice().sort((a,b) => a.t-b.t);
@@ -311,24 +387,15 @@ const PCOLCore = (() => {
     const touching = new Set(objects.filter(b => Math.hypot(cue.x-b.x,cue.y-b.y,cue.z-b.z) <= rc+radius(b,fallbackRadius)+eps).map(b => b.i));
     const contacts = events.filter(e => e.ballIndex != null && objects.some(b => b.i === e.ballIndex));
     const first = contacts[0];
-    // Validation is local to this immutable trace evaluation. Checking all
-    // positions also proves uniqueness; no cache survives into another call.
-    const indexedRows=new Uint8Array(trace.length);
-    for(let k=0;k<trace.length;k++) {
-      const row=trace[k].balls;
-      if(!row)continue;
-      let indexed=true;
-      for(let i=0;i<row.length;i++)if(!row[i] || row[i].i!==i){indexed=false;break;}
-      if(indexed)indexedRows[k]=1;
-    }
     const offendingBalls = [], details = [];
     let indeterminate = false;
+    const cueA={},cueB={},objectA={},objectB={},takeoff={},landing={};
     for (const object of objects) {
       const passages=[];
       let wasOver=false;
-      let previous=sampleBall(trace[0],object,indexedRows[0]);
+      let previous=reader.ball(0,object,objectA);
       for (let k=0;k<trace.length-1;k++) {
-        const a=trace[k],b=trace[k+1],oa=previous,ob=sampleBall(b,object,indexedRows[k+1]);
+        const a=reader.cue(k,cueA),b=reader.cue(k+1,cueB),oa=previous,ob=reader.ball(k+1,object,k%2?objectA:objectB);
         previous=ob;
         if (oa.active === false || ob.active === false) {wasOver=false;continue;}
         const over=sweptOver(a,b,oa,ob,rc+radius(object,fallbackRadius),eps);
@@ -348,18 +415,19 @@ const PCOLCore = (() => {
       }
       // Find the takeoff and landing belonging to this airborne passage.
       let start=passage.k;
-      while(start>0 && trace[start].y>groundY+eps) start--;
+      while(start>0 && reader.cue(start,takeoff).y>groundY+eps) start--;
       let land=passage.k+1;
-      while(land<trace.length && trace[land].y>groundY+eps) land++;
-      const hitDuringFlight = contacts.find(e => e.ballIndex===object.i && e.t>=trace[start].t && (land===trace.length || e.t<=trace[land].t));
+      while(land<trace.length && reader.cue(land,landing).y>groundY+eps) land++;
+      const startPoint=reader.cue(start,takeoff),landPoint=land<trace.length?reader.cue(land,landing):null;
+      const hitDuringFlight = contacts.find(e => e.ballIndex===object.i && e.t>=startPoint.t && (!landPoint || e.t<=landPoint.t));
       if (hitDuringFlight && !touching.has(object.i)) {
         if (land===trace.length) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Contacted ball; landing not yet recorded.'});continue;}
-        if(!trace[land].balls) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Contacted ball current position at landing is unavailable.'});continue;}
-        const objectAtLanding=ballAt(trace,object,trace[land].t,indexedRows);
-        const approach=ballAt(trace,object,passage.t,indexedRows);
-        const vx=approach.x-trace[start].x,vz=approach.z-trace[start].z;
+        if(!reader.hasBalls(land)) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Contacted ball current position at landing is unavailable.'});continue;}
+        const objectAtLanding=ballAt(reader,object,landPoint.t);
+        const approach=ballAt(reader,object,passage.t);
+        const vx=approach.x-startPoint.x,vz=approach.z-startPoint.z;
         const length=Math.hypot(vx,vz);
-        const far=length ? ((trace[land].x-objectAtLanding.x)*vx+(trace[land].z-objectAtLanding.z)*vz)/length : 0;
+        const far=length ? ((landPoint.x-objectAtLanding.x)*vx+(landPoint.z-objectAtLanding.z)*vz)/length : 0;
         if (far <= eps) {details.push({...detail,exception:'20(b): hit airborne, landed on near side of the ball current position.'});continue;}
         if (far < rc+radius(object,fallbackRadius)+eps) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Landing close to dividing plane; manual decision required.'});continue;}
       }
@@ -935,7 +1003,7 @@ const PCOLTrialShot = (() => {
   return { compile };
 })();
 
-const PCOLTrialWorkerSource = "/* PCOL rule helpers. x/z are cloth coordinates; y is height. No game mutation.\n * WPBSA 2024-25: definitions 17/20, play 3/4/7/8/11/12.\n * https://wpbsa.com/wp-content/uploads/2198_WPBSA-Rulebook-2024-25.pdf\n */\nconst PCOLCore = (() => {\n  'use strict';\n  const RADIUS = 0.02625;\n  const RED = 2, COLOUR_ALL = 252;\n  const FOUL = Object.freeze({MISS:1, FIRST_HIT:2, POTTING:4, CUE_POTTED:8, OFF_TABLE:16, JUMP:32, FREE_BALL_SNOOKER:64, PUSH:128, DOUBLE_HIT:256});\n  // Referee tolerance: the observed 0.188 mm resting gap counts as touching.\n  // Keep physical spotting clearance independent of this judgement tolerance.\n  const CONTACT_EPS = 1e-5, TOUCH_EPS = 2e-4;\n  const unique = a => [...new Set(a)];\n  const radius = (b, fallback = RADIUS) => b.r > 0 ? b.r : fallback;\n  const hypot2 = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);\n  const active = b => b.active !== false;\n  const ballOnNumbers = mask => [1,2,3,4,5,6,7].filter(n => (mask & (1 << n)) !== 0);\n\n  // PCOL's x axis runs from Baulk to the black end. Leave a small gap beyond\n  // the touching tolerance, and only consider Baulk after the top side is full.\n  function pinkRespotX(balls, pink, minX, maxX) {\n    const intervals=[];\n    for(const b of balls){\n      if(!active(b)||b.i===pink.i)continue;\n      const rr=radius(pink)+radius(b)+2*CONTACT_EPS;\n      const across=(b.y-pink.y)**2+(b.z-pink.z)**2;\n      if(across>=rr*rr)continue;\n      const half=Math.sqrt(rr*rr-across);\n      intervals.push([b.x-half,b.x+half]);\n    }\n    intervals.sort((a,b)=>a[0]-b[0]);\n    const blocked=[];\n    for(const range of intervals){\n      const last=blocked[blocked.length-1];\n      if(last&&range[0]<last[1])last[1]=Math.max(last[1],range[1]);\n      else blocked.push(range);\n    }\n    let x=pink.x;\n    for(const [left,right] of blocked){\n      if(x<=left)break;\n      if(x<right)x=right;\n    }\n    if(x<=maxX)return x;\n    x=pink.x;\n    for(let i=blocked.length-1;i>=0;i--){\n      const [left,right]=blocked[i];\n      if(x>=right)break;\n      if(x>left)x=left;\n    }\n    return x>=minX?x:null;\n  }\n\n  function touchingStatus({balls,ballOn,nominatedColour=null,freeBallNominee=null}) {\n    const cue=balls.find(b=>b.n===0 && active(b));\n    const touched=cue?balls.filter(b=>b.n>0 && active(b) && Math.hypot(cue.x-b.x,cue.y-b.y,cue.z-b.z)<=radius(cue)+radius(b)+TOUCH_EPS):[];\n    const on=ballOn===COLOUR_ALL?(nominatedColour?[nominatedColour]:[]):ballOnNumbers(ballOn);\n    const eligible=freeBallNominee!=null?touched.filter(b=>b.i===freeBallNominee):touched.filter(b=>on.includes(b.n));\n    return {indices:touched.map(b=>b.i),eligibleIndices:eligible.map(b=>b.i),deemedHit:eligible.length>0,requiresColourDeclaration:ballOn===COLOUR_ALL && touched.some(b=>b.n>=2),tolerance:TOUCH_EPS};\n  }\n\n  function remainingPoints(balls, ballOn, {freeBall = false} = {}) {\n    if (!ballOn || ballOn === 65535) return 0;\n    const live = balls.filter(b => active(b) && b.n > 0);\n    const reds = live.filter(b => b.n === 1).length;\n    let maximum = reds || ballOn === COLOUR_ALL ? reds * 8 + 27 + (ballOn === COLOUR_ALL ? 7 : 0) : live.filter(b => b.n >= 2).reduce((sum,b) => sum+b.n,0);\n    if (freeBall) maximum += ballOn === RED ? 8 : ballOn === COLOUR_ALL ? 7 : ballOnNumbers(ballOn)[0] || 0;\n    return maximum;\n  }\n\n  // User-requested optional concession threshold, not a mandatory match rule.\n  function concessionStatus({balls, ballOn, scores, playerIndex, freeBall = false, threshold = 1}) {\n    const maximum = remainingPoints(balls,ballOn,{freeBall});\n    const valid = scores.length === 2 && (playerIndex === 0 || playerIndex === 1) && ballOn > 0 && ballOn !== 65535;\n    const deficit = valid ? scores[1-playerIndex]-scores[playerIndex] : 0;\n    const excess = deficit-maximum;\n    return {eligible:valid && excess >= threshold,playerIndex,remaining:maximum,deficit,excess,threshold};\n  }\n\n  /** User-customised early finish, separate from the official final-black rule.\n   * Supply settled post-stroke balls/scores, including foul penalties and respots.\n   * A known free-ball opportunity adds its possible points; unresolved review\n   * cannot establish an early finish. Omit actor/continueBreak for a stable turn.\n   * At 17 over only the leader's legal scoring break may continue. The separate\n   * blackLeadThreshold is a score lead (default 8), not points over the table.\n   * On the last Black, playerIndex is the incoming player: the leader keeps\n   * their shot, including after potting Pink; the trailing player's turn ends it.\n   */\n  function earlyFrameOutcome({balls,ballOn,scores,playerIndex=null,actor=null,continueBreak=false,freeBall=false,freeBallReview=false,threshold=17,blackLeadThreshold=8}) {\n    if(!Array.isArray(balls)||!Array.isArray(scores)||scores.length!==2||!scores.every(Number.isFinite)||\n      !ballOn||ballOn===65535||freeBallReview||freeBall==null||scores[0]===scores[1])return null;\n    const winner=scores[0]>scores[1]?0:1,loser=1-winner;\n    const deficit=scores[winner]-scores[loser],remaining=remainingPoints(balls,ballOn,{freeBall}),excess=deficit-remaining;\n    const live=balls.filter(b=>b.n>0&&active(b));\n    if(ballOn===128&&live.length===1&&live[0].n===7&&Number.isFinite(blackLeadThreshold)&&deficit>=blackLeadThreshold)\n      return playerIndex===loser?{winner,loser,deficit,remaining,excess,threshold:blackLeadThreshold,reason:'black-lead'}:null;\n    if(Number.isFinite(threshold)&&excess>=threshold&&!(actor===winner&&continueBreak===true))\n      return {winner,loser,deficit,remaining,excess,threshold,reason:'excess-threshold'};\n    return null;\n  }\n\n  // Earliest intersection of a cue-centre ray with a ball's expanded disc.\n  function rayBlocker(cue, direction, length, b, cueRadius, eps) {\n    const dx = b.x - cue.x, dz = b.z - cue.z;\n    const projection = dx * direction.x + dz * direction.z;\n    const rr = cueRadius + radius(b);\n    const perpendicular2 = dx * dx + dz * dz - projection * projection;\n    if (perpendicular2 >= rr * rr - eps || projection + rr < 0) return false;\n    const enter = projection - Math.sqrt(Math.max(0, rr * rr - perpendicular2));\n    return enter < length - eps && projection + Math.sqrt(Math.max(0, rr * rr - perpendicular2)) > eps;\n  }\n\n  /** Both extreme physical contacts must be available on at least one ball on.\n   * Cushions and other balls on cannot cause a snooker under definition 17.\n   * options.inHand requires an all-positions proof which this helper does not\n   * attempt: it returns null, never true based on a finite sample of the D.\n   * Effective blockers are returned for the free-ball safety restriction.\n   */\n  function isSnookered(balls, ballOn, cuePosition, options = {}) {\n    if (options.inHand) return {snookered:null, indeterminate:true, clearTargets:[], details:[], effectiveSnookeringBalls:[], reason:'All legal cue positions in the D must be considered.'};\n    const cue = cuePosition || balls.find(b => b.n === 0 && active(b));\n    const on = ballOnNumbers(ballOn);\n    const targets = balls.filter(b => active(b) && on.includes(b.n));\n    if (!cue || targets.length === 0) return {snookered:null, indeterminate:true, clearTargets:[], details:[], effectiveSnookeringBalls:[], reason:'Cue position or ball on unavailable.'};\n    const rc = radius(cue, options.radius || RADIUS), eps = options.epsilon || 1e-8;\n    const blockers = balls.filter(b => active(b) && b.n > 0 && !on.includes(b.n));\n    const details = targets.map(target => {\n      const distance = hypot2(cue, target), rr = rc + radius(target);\n      if (distance <= rr + eps) return {target:target.i, indeterminate:true, leftBlockedBy:[], rightBlockedBy:[], effective:[]};\n      const angle = Math.atan2(target.z - cue.z, target.x - cue.x);\n      const halfAngle = Math.asin(Math.min(1, rr / distance));\n      const travel = Math.sqrt(distance * distance - rr * rr);\n      const edge = sign => {\n        const theta = angle + sign * halfAngle;\n        const direction = {x:Math.cos(theta), z:Math.sin(theta)};\n        return blockers.filter(b => rayBlocker(cue, direction, travel, b, rc, eps)).map(b => b.i);\n      };\n      const leftBlockedBy = edge(1), rightBlockedBy = edge(-1);\n      const both = unique([...leftBlockedBy, ...rightBlockedBy]);\n      const nearest = Math.min(...both.map(i => hypot2(cue, balls.find(b => b.i === i))));\n      const effective = both.filter(i => Math.abs(hypot2(cue, balls.find(b => b.i === i)) - nearest) <= eps);\n      return {target:target.i, leftBlockedBy, rightBlockedBy, effective, clear:both.length === 0};\n    });\n    const clearTargets = details.filter(d => d.clear).map(d => d.target);\n    const indeterminate = !clearTargets.length && details.some(d => d.indeterminate);\n    const snookered = clearTargets.length ? false : indeterminate ? null : true;\n    let effectiveSnookeringBalls = snookered ? details[0].effective.slice() : [];\n    for (const d of details) effectiveSnookeringBalls = effectiveSnookeringBalls.filter(i => d.effective.includes(i));\n    return {snookered, indeterminate, clearTargets, details, effectiveSnookeringBalls};\n  }\n\n  /** Proves visibility of any part of a legal ball, not both extreme edges.\n   * Ray collision order can only change at disc tangent angles or the angles\n   * of expanded-disc intersections. Test each angular cell plus its boundaries.\n   * This handles arbitrarily narrow positive gaps without a fixed angle grid.\n   */\n  function hasDirectHit(balls, ballOn, cuePosition, options = {}) {\n    const unknown=reason=>({hasDirectHit:null,indeterminate:true,target:null,direction:null,reason});\n    if(options.inHand) return unknown('All legal cue positions in the D must be considered.');\n    const cue=cuePosition || balls.find(b=>b.n===0 && active(b));\n    if(!cue) return unknown('Cue position unavailable.');\n    const on=ballOnNumbers(ballOn), rc=radius(cue,options.radius || RADIUS),eps=options.epsilon || 1e-9;\n    const objects=balls.filter(b=>b.n>0 && active(b));\n    if(!objects.some(b=>on.includes(b.n))) return unknown('Ball on unavailable.');\n    const circles=objects.map(b=>({b,x:b.x-cue.x,z:b.z-cue.z,r:rc+radius(b)}));\n    const tau=2*Math.PI,normal=a=>(a%tau+tau)%tau;\n    const angles=[];\n    let touching=false;\n    for(const c of circles) {\n      const d=Math.hypot(c.x,c.z);\n      if(d<=c.r+eps){touching=true;continue;}\n      const angle=Math.atan2(c.z,c.x),h=Math.asin(c.r/d);\n      angles.push(normal(angle-h),normal(angle+h),normal(angle));\n    }\n    for(let i=0;i<circles.length;i++) for(let j=i+1;j<circles.length;j++) {\n      const a=circles[i],b=circles[j],dx=b.x-a.x,dz=b.z-a.z,d=Math.hypot(dx,dz);\n      if(d<=eps || d>a.r+b.r+eps || d<Math.abs(a.r-b.r)-eps)continue;\n      const along=(a.r*a.r-b.r*b.r+d*d)/(2*d),height=Math.sqrt(Math.max(0,a.r*a.r-along*along));\n      const x=a.x+along*dx/d,z=a.z+along*dz/d;\n      angles.push(normal(Math.atan2(z+height*dx/d,x-height*dz/d)),normal(Math.atan2(z-height*dx/d,x+height*dz/d)));\n    }\n    angles.sort((a,b)=>a-b);\n    const candidates=angles.slice();\n    for(let i=0;i<angles.length;i++)candidates.push(normal((angles[i]+(i+1<angles.length?angles[i+1]:angles[0]+tau))/2));\n    for(const angle of candidates) {\n      const direction={x:Math.cos(angle),z:Math.sin(angle)};\n      const entries=[];\n      for(const c of circles) {\n        const projection=c.x*direction.x+c.z*direction.z;\n        const discriminant=c.r*c.r-(c.x*c.x+c.z*c.z-projection*projection);\n        if(discriminant < -eps) continue;\n        const root=Math.sqrt(Math.max(0,discriminant)),near=projection-root,far=projection+root;\n        if(far<eps)continue;\n        entries.push({i:c.b.i,n:c.b.n,t:Math.max(0,near)});\n      }\n      if(!entries.length)continue;\n      const nearest=Math.min(...entries.map(e=>e.t));\n      const first=entries.filter(e=>Math.abs(e.t-nearest)<=eps);\n      if(first.every(e=>on.includes(e.n)) && nearest>eps) {\n        const point={x:cue.x+direction.x*nearest,y:cue.y,z:cue.z+direction.z*nearest};\n        if(options.isPathClear && !options.isPathClear(cue,point))continue;\n        return {hasDirectHit:true,indeterminate:false,target:first[0].i,direction,contactPoint:point,reason:'Direct first contact with a ball on is available.'};\n      }\n    }\n    if(touching) return unknown('Cue is touching or overlapping an object; touching-ball ruling required.');\n    return {hasDirectHit:false,indeterminate:false,target:null,direction:null,reason:'Every straight ray to a ball on first meets a ball not on.'};\n  }\n\n  // Nominate BEFORE the stroke from the current horizontal aim, never from its\n  // eventual outcome. A farther ball on the same ray cannot obscure the intent\n  // to hit the nearer ball. Touching/tangent/tied contacts need a declaration.\n  function inferColour(balls, direction) {\n    const unknown = reason => ({colour:null,ballIndex:null,reason});\n    const cue = balls.find(b => b.n === 0 && active(b));\n    const length = Math.hypot(direction?.x, direction?.z);\n    if (!cue || !Number.isFinite(length) || length < 1e-9) return unknown('invalid-aim');\n    const dx = direction.x / length, dz = direction.z / length, entries = [];\n    for (const b of balls) {\n      if (!active(b) || b.n < 1) continue;\n      const x = b.x-cue.x, z = b.z-cue.z, rr = radius(cue)+radius(b);\n      if (Math.hypot(x,z) <= rr+1e-8) return unknown('touching');\n      const projection = x*dx+z*dz;\n      const disc = rr*rr-(x*x+z*z-projection*projection);\n      if (projection <= 0 || disc < -1e-12) continue;\n      entries.push({b,t:projection-Math.sqrt(Math.max(0,disc)),tangent:disc <= 1e-12});\n    }\n    entries.sort((a,b) => a.t-b.t);\n    if (!entries.length) return unknown('no-direct-target');\n    const first = entries[0];\n    if (first.tangent || entries[1] && entries[1].t-first.t < 1e-7) return unknown('ambiguous');\n    if (first.b.n < 2) return unknown('blocked-by-red');\n    return {colour:first.b.n,ballIndex:first.b.i,reason:'direct'};\n  }\n\n  function lerp(a, b, u) { return {x:a.x+(b.x-a.x)*u, y:a.y+(b.y-a.y)*u, z:a.z+(b.z-a.z)*u}; }\n  function sampleBall(sample, b, indexed) {\n    if (!sample.balls) return b;\n    // Only rows whose IDs exactly match every array index may bypass find.\n    // Other rows retain its first-match behavior, including duplicate IDs.\n    const found = indexed && Number.isInteger(b.i) && b.i>=0 && b.i<sample.balls.length ? sample.balls[b.i] : sample.balls.find(v => v.i === b.i);\n    return found || {...b,active:false};\n  }\n  function ballAt(trace, b, t, indexedRows) {\n    let j = 0;\n    while (j + 1 < trace.length && trace[j + 1].t < t) j++;\n    if (j + 1 === trace.length) return sampleBall(trace[j], b, indexedRows[j]);\n    const a = trace[j], next = trace[j+1];\n    const u = Math.max(0, Math.min(1, (t-a.t) / (next.t-a.t || 1)));\n    return lerp(sampleBall(a,b,indexedRows[j]),sampleBall(next,b,indexedRows[j+1]),u);\n  }\n\n  // Relative swept-disc overlap, retaining only points with the cue above\n  // the object's surface. Merely lifting the cue/using masse is not a foul.\n  function sweptOver(a, b, objectA, objectB, rr, eps) {\n    const px=a.x-objectA.x, py=a.y-objectA.y, pz=a.z-objectA.z;\n    const vx=b.x-objectB.x-px, vy=b.y-objectB.y-py, vz=b.z-objectB.z-pz;\n    const limit2=(rr-eps)*(rr-eps);\n    const A = vx*vx+vz*vz, B = 2*(px*vx+pz*vz), C = px*px+pz*pz-limit2;\n    let lo = 0, hi = 1;\n    if (A < eps*eps) { if (C >= 0) return null; }\n    else {\n      const D = B*B-4*A*C;\n      if (D <= 0) return null;\n      lo = Math.max(0,(-B-Math.sqrt(D))/(2*A));\n      hi = Math.min(1,(-B+Math.sqrt(D))/(2*A));\n      if (lo > hi) return null;\n    }\n    // Total distance squared is convex. Endpoints and horizontal closest\n    // approach catch above-surface passage without treating overlap caused\n    // by the collision solver's penetration tolerance as an illegal jump.\n    const near = A > 0 ? Math.max(lo,Math.min(hi,-B/(2*A))) : (lo+hi)/2;\n    for (let i=0;i<4;i++) {\n      const u=i===0?near:i===1?(lo+hi)/2:i===2?lo+(hi-lo)*1e-4:hi-(hi-lo)*1e-4;\n      const qx=px+u*vx, qy=py+u*vy, qz=pz+u*vz;\n      const horizontal2 = qx*qx+qz*qz;\n      if (qy > eps && horizontal2 < limit2 && horizontal2+qy*qy >= limit2) return {u,position:lerp(a,b,u)};\n    }\n    return null;\n  }\n\n  /** Physics-step trace; optional trace[k].balls records moving object centres.\n   * contactEvents: {t,ballIndex,legal?}; cushions: {t,kind:'cushion'}.\n   * legal is only needed for exception 20(c). Missing legal metadata is treated\n   * conservatively; other rule checks still reject an illegal first hit.\n   * Borderline/unfinished airborne paths are indeterminate, not auto-penalised.\n   */\n  function evaluateJump(trace, ballsAtStart, contactEvents = [], fallbackRadius = RADIUS) {\n    if (!trace || trace.length < 2) return {foul:false, offendingBalls:[], reason:'Insufficient trajectory.', indeterminate:true, details:[]};\n    const cue = ballsAtStart.find(b => b.n === 0) || {r:fallbackRadius,...trace[0]};\n    const rc = radius(cue,fallbackRadius), eps = Math.max(1e-6,rc*0.002);\n    const groundY = cue.y;\n    const events = contactEvents.slice().sort((a,b) => a.t-b.t);\n    const objects = ballsAtStart.filter(b => b.n > 0 && active(b));\n    const touching = new Set(objects.filter(b => Math.hypot(cue.x-b.x,cue.y-b.y,cue.z-b.z) <= rc+radius(b,fallbackRadius)+eps).map(b => b.i));\n    const contacts = events.filter(e => e.ballIndex != null && objects.some(b => b.i === e.ballIndex));\n    const first = contacts[0];\n    // Validation is local to this immutable trace evaluation. Checking all\n    // positions also proves uniqueness; no cache survives into another call.\n    const indexedRows=new Uint8Array(trace.length);\n    for(let k=0;k<trace.length;k++) {\n      const row=trace[k].balls;\n      if(!row)continue;\n      let indexed=true;\n      for(let i=0;i<row.length;i++)if(!row[i] || row[i].i!==i){indexed=false;break;}\n      if(indexed)indexedRows[k]=1;\n    }\n    const offendingBalls = [], details = [];\n    let indeterminate = false;\n    for (const object of objects) {\n      const passages=[];\n      let wasOver=false;\n      let previous=sampleBall(trace[0],object,indexedRows[0]);\n      for (let k=0;k<trace.length-1;k++) {\n        const a=trace[k],b=trace[k+1],oa=previous,ob=sampleBall(b,object,indexedRows[k+1]);\n        previous=ob;\n        if (oa.active === false || ob.active === false) {wasOver=false;continue;}\n        const over=sweptOver(a,b,oa,ob,rc+radius(object,fallbackRadius),eps);\n        if (over && !wasOver) passages.push({k,t:a.t+(b.t-a.t)*over.u,position:over.position});\n        wasOver=!!over;\n      }\n      for(const passage of passages) {\n      const detail = {ballIndex:object.i,t:passage.t};\n      if (first && first.t <= passage.t && first.ballIndex !== object.i && !touching.has(first.ballIndex)) {\n        details.push({...detail,exception:'20(a): first hit another non-touching object ball.'});\n        continue;\n      }\n      const prior = contacts.find(e => e.ballIndex===object.i && e.t<=passage.t && !touching.has(e.ballIndex));\n      if (prior && prior.legal !== false && events.some(e => e.t > prior.t && e.t < passage.t && (e.kind==='cushion' || (e.ballIndex!=null && e.ballIndex!==object.i)))) {\n        details.push({...detail,exception:'20(c): returned after object/cushion contact.'});\n        continue;\n      }\n      // Find the takeoff and landing belonging to this airborne passage.\n      let start=passage.k;\n      while(start>0 && trace[start].y>groundY+eps) start--;\n      let land=passage.k+1;\n      while(land<trace.length && trace[land].y>groundY+eps) land++;\n      const hitDuringFlight = contacts.find(e => e.ballIndex===object.i && e.t>=trace[start].t && (land===trace.length || e.t<=trace[land].t));\n      if (hitDuringFlight && !touching.has(object.i)) {\n        if (land===trace.length) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Contacted ball; landing not yet recorded.'});continue;}\n        if(!trace[land].balls) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Contacted ball current position at landing is unavailable.'});continue;}\n        const objectAtLanding=ballAt(trace,object,trace[land].t,indexedRows);\n        const approach=ballAt(trace,object,passage.t,indexedRows);\n        const vx=approach.x-trace[start].x,vz=approach.z-trace[start].z;\n        const length=Math.hypot(vx,vz);\n        const far=length ? ((trace[land].x-objectAtLanding.x)*vx+(trace[land].z-objectAtLanding.z)*vz)/length : 0;\n        if (far <= eps) {details.push({...detail,exception:'20(b): hit airborne, landed on near side of the ball current position.'});continue;}\n        if (far < rc+radius(object,fallbackRadius)+eps) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Landing close to dividing plane; manual decision required.'});continue;}\n      }\n      offendingBalls.push(object.i);\n      details.push({...detail,foul:true,reason:'Cue passed above an object ball without a recorded exception.'});\n      }\n    }\n    return {foul:offendingBalls.length>0,offendingBalls:unique(offendingBalls),reason:offendingBalls.length?'Illegal jump over an object ball.':indeterminate?'Some airborne contact needs review.':'No illegal jump found.',indeterminate,details};\n  }\n\n  // Section 3.4: assess the scores after the final Black's pot or foul.\n  function blackFrameOutcome({ballOn,balls,score,scores,respottedBlack=false}) {\n    if(ballOn!==128 || score===0 || scores.length!==2)return null;\n    const remaining=balls.filter(b=>b.n>0 && active(b));\n    if(remaining.length!==1 || remaining[0].n!==7)return null;\n    return !respottedBlack && scores[0]===scores[1]?'respot':'end';\n  }\n\n  /** Indices identify firstHits (simultaneous), potted, outOfBounds and nominee.\n   * nominatedColour is a number 2..7. balls contains final positions and all\n   * objects including inactive entries. Removed indices are also excluded when\n   * callers supply pre-stroke active flags. Colours to respot are indices.\n   * This pure function does not decide discretionary Foul and a Miss, restore\n   * positions, choose colour spot geometry, or decide a tied-frame re-spot.\n   */\n  function adjudicate({ballOn,nominatedColour=null,freeBallNominee=null,balls,firstHits=[],potted=[],outOfBounds=[],jumpFoul=false,touchingAtStart=[],pushedTouching=[],cueStrikes=1}) {\n    const byIndex=new Map(balls.map(b=>[b.i,b]));\n    const hits=unique(firstHits).map(i=>byIndex.get(i)).filter(b=>b && b.n>0);\n    const pots=unique(potted).map(i=>byIndex.get(i)).filter(Boolean);\n    const outs=unique(outOfBounds).map(i=>byIndex.get(i)).filter(Boolean);\n    const removed=new Set([...potted,...outOfBounds]);\n    const onNumbers=ballOnNumbers(ballOn), colourChoice=ballOn===COLOUR_ALL;\n    const nominee=freeBallNominee==null?null:byIndex.get(freeBallNominee);\n    let on=onNumbers.length===1?onNumbers[0]:null;\n    if(colourChoice) on=nominatedColour>=2 && nominatedColour<=7?nominatedColour:(hits.length===1 && hits[0].n>=2?hits[0].n:null);\n    let foulCode=0,penalty=0;\n    const reasons=[];\n    const penalise=(code,value,reason)=>{foulCode|=code;penalty=Math.max(penalty,4,value||0);reasons.push(reason);};\n    const baseValue=on || (colourChoice?7:4);\n    const validNominee=nominee && nominee.n>0 && nominee.n!==on;\n    const value=b=>validNominee && b.i===nominee.i?baseValue:b.n;\n    const touching=unique(touchingAtStart).map(i=>byIndex.get(i)).filter(b=>b && b.n>0);\n    const deemedHit=validNominee?touching.some(b=>b.i===nominee.i):on!=null && touching.some(b=>b.n===on);\n    if(freeBallNominee!=null && !validNominee) penalise(FOUL.FIRST_HIT,baseValue,'Invalid free-ball nomination.');\n    if(!deemedHit && hits.length===0) penalise(FOUL.MISS,baseValue,'No object ball contacted.');\n    else if(!deemedHit) {\n      const firstLegal=validNominee?hits.some(b=>b.i===nominee.i) && hits.every(b=>b.i===nominee.i || b.n===on):on!=null && hits.every(b=>b.n===on);\n      if(!firstLegal) penalise(FOUL.FIRST_HIT,Math.max(baseValue,...hits.map(value)),'First contact was not on.');\n    }\n    for(const i of unique(pushedTouching)) {\n      const b=touching.find(b=>b.i===i);\n      if(b) penalise(FOUL.PUSH,Math.max(baseValue,value(b)),'Striking the cue caused an initially touching ball to move before playing away.');\n    }\n    if(cueStrikes>1)penalise(FOUL.DOUBLE_HIT,baseValue,'The cue tip struck the cue ball more than once in this stroke.');\n    for(const b of pots) {\n      if(b.n===0) penalise(FOUL.CUE_POTTED,baseValue,'Cue ball pocketed.');\n      else if(b.n!==on && !(validNominee && b.i===nominee.i)) penalise(FOUL.POTTING,Math.max(baseValue,value(b)),'Ball not on pocketed.');\n    }\n    for(const b of outs) penalise(FOUL.OFF_TABLE,Math.max(baseValue,value(b)),'Ball forced off the table.');\n    if(jumpFoul===true || jumpFoul && jumpFoul.foul) penalise(FOUL.JUMP,baseValue,'Illegal jump.');\n    let points=on===1?pots.filter(b=>b.n===1 || validNominee && b.i===nominee.i).length:pots.some(b=>b.n===on || validNominee && b.i===nominee.i)?(on||0):0;\n    const finalBalls=balls.map(b=>removed.has(b.i)?{...b,active:false}:b);\n    let freeBallSafety=null;\n    if(validNominee && !foulCode && points===0) {\n      const remaining=finalBalls.filter(b=>b.n>0 && active(b));\n      const twoColoursWithBlack=remaining.length===2 && remaining.every(b=>b.n>=2) && remaining.some(b=>b.n===7);\n      if(!twoColoursWithBlack) {\n        freeBallSafety=isSnookered(finalBalls,1<<on);\n        if(freeBallSafety.snookered && freeBallSafety.effectiveSnookeringBalls.includes(nominee.i)) penalise(FOUL.FREE_BALL_SNOOKER,baseValue,'Nominated free ball left an effective snooker after a non-scoring stroke.');\n      }\n    }\n    const score=foulCode?-penalty:points;\n    const redsRemain=finalBalls.some(b=>b.n===1 && active(b));\n    const canonicalPotted=pots.some(b=>b.n===on && !(validNominee && b.i===nominee.i));\n    let nextBallOn=ballOn;\n    if(score>0) {\n      if(ballOn===RED) nextBallOn=COLOUR_ALL;\n      else if(colourChoice) nextBallOn=redsRemain?RED:4;\n      else if(canonicalPotted) nextBallOn=on===7?0:1<<(on+1);\n    } else if(ballOn===RED || colourChoice) nextBallOn=redsRemain?RED:4;\n    // The host retains responsibility for tied scores and re-spotted black.\n    if(on===7 && !colourChoice && score<0 && !validNominee) nextBallOn=0;\n    const respots=unique([...pots,...outs].filter(b=>b.n>=2 && (foulCode || ballOn===RED || colourChoice || validNominee && b.i===nominee.i)).map(b=>b.i)).sort((a,b)=>byIndex.get(b).n-byIndex.get(a).n);\n    const cueBall=balls.find(b=>b.n===0);\n    const requiresInHand=!!cueBall && (removed.has(cueBall.i) || !active(cueBall));\n    return {score,foulCode,nextBallOn,respots,requiresInHand,ballOnUsed:on,penalty:foulCode?penalty:0,freeBallNominee:validNominee?nominee.i:null,reasons,freeBallSafety,canonicalPotted,continueBreak:score>0,cueStrikes,touching:{indices:touching.map(b=>b.i),deemedHit,pushedIndices:unique(pushedTouching)}};\n  }\n  return Object.freeze({RADIUS,RED,COLOUR_ALL,FOUL,CONTACT_EPS,TOUCH_EPS,ballOnNumbers,pinkRespotX,touchingStatus,remainingPoints,concessionStatus,earlyFrameOutcome,isSnookered,hasDirectHit,inferColour,evaluateJump,blackFrameOutcome,adjudicate});\n})();\n\n/* Isolated full-shot runner. This function is stringified into a dedicated worker. */\nfunction PCOLTrialWorker() {\n  'use strict';\n  let setup = null;\n  const requireModules = sources => {\n    const cache = Object.create(null);\n    function req(id) {\n      if (cache[id]) return cache[id].exports;\n      if (typeof sources[id] !== 'string') throw new Error('Missing physics module ' + id);\n      const mod = cache[id] = {exports:{}};\n      new Function('return (' + sources[id] + ')')()(mod, mod.exports, req);\n      return mod.exports;\n    }\n    req.o = (object, key) => Object.prototype.hasOwnProperty.call(object, key);\n    req.d = (exports, key, getter) => {\n      if (!req.o(exports,key)) Object.defineProperty(exports,key,{enumerable:true,get:getter});\n    };\n    req.r = exports => {\n      if (typeof Symbol !== 'undefined' && Symbol.toStringTag) Object.defineProperty(exports,Symbol.toStringTag,{value:'Module'});\n      Object.defineProperty(exports,'__esModule',{value:true});\n    };\n    req.n = mod => {\n      const getter = mod && mod.__esModule ? () => mod.default : () => mod;\n      req.d(getter,'a',getter); return getter;\n    };\n    return req;\n  };\n  const clock = () => performance.now();\n  const centres = world => world.balls.map(b => ({i:b.index,n:b.number,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,r:b.radius}));\n\n  function preservePinkRespot(ref) {\n    const original=ref._liveRespotColorBalls;\n    ref._liveRespotColorBalls=function(list,sim) {\n      if(!list.some(b=>b.number===6))return original.call(this,list,sim);\n      const clearance=1.05*sim.ballRadius,reserved=new Set();\n      for(let i=list.length-1;i>=0;i--) {\n        const b=list[i];reserved.add(b.number);\n        if(!sim.touchBalls(b.index,b.spot,clearance)){list.splice(i,1);sim.respotIndexDefault(b.index);}\n      }\n      list.sort((a,b)=>a.number-b.number);\n      const colours=sim.getBalls().filter(b=>b.number>=2).sort((a,b)=>b.number-a.number);\n      for(const spotBall of colours) {\n        if(!list.length)break;\n        const b=list[list.length-1];\n        if(!reserved.has(spotBall.number)&&!sim.touchBalls(b.index,spotBall.spot,clearance))sim.resetBallPosition(list.pop(),spotBall.spot);\n      }\n      while(list.length) {\n        const b=list.pop();\n        if(b.number!==6){original.call(this,[b],sim);continue;}\n        const ground=sim.ground,margin=sim.ballRadius+2*PCOLCore.CONTACT_EPS;\n        const minX=ground.centerPosition.x-ground.size.x/2+margin,maxX=ground.centerPosition.x+ground.size.x/2-margin;\n        const bs=sim.getBalls().map(b=>({i:b.index,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,r:b.radius}));\n        const x=PCOLCore.pinkRespotX(bs,{i:b.index,...b.spot,r:b.radius},minX,maxX);\n        if(x===null)throw new Error('No legal pink-ball respot position');\n        sim.resetBallXYZ(b,x,b.spot.y,b.spot.z);\n      }\n    };\n  }\n\n  function simulate(message) {\n    if (!setup) throw new Error('Worker is not initialized');\n    const {snapshot,stroke} = message, options = message.options || {};\n    if (!snapshot || !snapshot.serial || !Array.isArray(snapshot.balls) || !snapshot.rules) throw new Error('Invalid trial snapshot');\n    if ((!Array.isArray(stroke) && !ArrayBuffer.isView(stroke)) || stroke.length !== 8 || !Array.from(stroke).every(Number.isFinite)) throw new Error('Invalid trial stroke');\n    const started = clock(), req = setup.req;\n    const World=req(39), Ball=req(49), Simulator=req(50), Solver=req(21), MeshBody=req(84);\n    const world = new World();\n    world.stepSize=setup.stepSize;\n    world.solver=new Solver();\n    world.solver.maxIter=setup.maxIter;\n    const mesh=new MeshBody(setup.geometry.data);\n    mesh.id=setup.geometry.id;\n    for(const group of mesh.groups) {\n      const nt=setup.geometry.data[group.name].nt;\n      if(nt) {\n        const uv=req(80);\n        const table=uv.createNTableWithImgData({width:0,height:0,data:[]});\n        Object.assign(table,nt);\n        uv.extendPolyGroup(group,table);\n      }\n    }\n    world.setMeshBody(mesh);\n    for (const b of snapshot.balls) {\n      if (b.i !== world.balls.length || !(b.r>0) || !(b.mass>0) || !b.spot) throw new Error('Invalid ball configuration');\n      world.addBall(new Ball(b.n,b.r,b.mass,b.spot.x,b.spot.y,b.spot.z,b.i));\n    }\n    world.reset();\n    world.deserialize(snapshot.serial);\n    for(const source of snapshot.balls) {\n      const transient=source.transient;\n      if(!transient)continue;\n      const ball=world.balls[source.i];\n      for(const key of ['rfPower','penetration','collisionMask']) {\n        if(transient[key]!==undefined)ball[key]=transient[key];\n      }\n      for(const key of ['rfDir','peneOffset']) {\n        if(transient[key])ball[key].copy(transient[key]);\n      }\n    }\n    const sim=new Simulator('trial',world,null);\n    sim._syncList.ballRadius=world.balls[0].radius;\n    sim._sceneId=snapshot.sceneId || 'tigerClubSno';\n    sim._spotY=sim.ground.centerPosition.y+sim.ballRadius;\n    if(options.scenarioBalls)for(const b of options.scenarioBalls){\n      const ball=world.balls[b.i];\n      if(b.active!==false)sim.respotIndexXYZ(b.i,b.x,b.y,b.z);\n      else ball.active=false;\n    }\n    if (options.cuePosition != null) {\n      const position=options.cuePosition;\n      if (!['x','y','z'].every(key=>Number.isFinite(position[key]))) throw new Error('Invalid trial cue position');\n      sim.respotIndexXYZ(0,position.x,position.y,position.z);\n    }\n    const before=centres(world), rules={...snapshot.rules},custom=rules.ballOn===65535;\n    // A banked colour shot must declare its target before physics, rather than\n    // trying to infer a colour from the initial ray toward a cushion.\n    if (options.nominatedColour != null) {\n      const colour=options.nominatedColour;\n      if(rules.ballOn!==252 || !Number.isInteger(colour) || colour<2 || colour>7 ||\n        (rules.nominatedColour && rules.nominatedColour!==colour) ||\n        !before.some(b=>b.active && b.n===colour)) throw new Error('Invalid trial colour nomination');\n      rules.nominatedColour=colour;rules.nominationSource='manual';\n    }\n    const reviewReasons=[];\n    let touching=PCOLCore.touchingStatus({balls:before,...rules});\n    if(!custom) {\n      if(rules.freeBallReview)reviewReasons.push('Free-ball decision requires review.');\n      if(rules.freeBallAvailable && rules.freeBallNominee==null && !rules.freeBallDeclined)reviewReasons.push('Nominate or decline the available free ball.');\n      if(touching.requiresColourDeclaration && rules.nominationSource!=='manual')reviewReasons.push('Touching colour requires manual nomination.');\n      if(rules.ballOn===252 && !rules.nominatedColour && !touching.requiresColourDeclaration) {\n        const inferred=PCOLCore.inferColour(before,{x:stroke[3],z:stroke[5]});\n        if(inferred.colour) {\n          rules.nominatedColour=inferred.colour;rules.nominationSource='auto';\n          touching=PCOLCore.touchingStatus({balls:before,...rules});\n        } else reviewReasons.push('Colour nomination is ambiguous.');\n      }\n    }\n    const watches=new Map(touching.indices.map(i=>[i,{initial:true}]));\n    const trace=[], contacts=[], pushedTouching=[];\n    let overflow=false,recording=false,steps=0,simulatedSeconds=0,cueStrikes=0;\n    const traceCap=15000;\n    function sample() {\n      if (trace.length>=traceCap) {overflow=true;return null;}\n      const balls=centres(world),cue=balls[0];\n      const row={t:trace.length,seconds:simulatedSeconds,x:cue.x,y:cue.y,z:cue.z,balls};\n      for(const [i,watch] of watches) {\n        const b=balls[i];\n        if(watch.initial && (!b.active || Math.hypot(cue.x-b.x,cue.y-b.y,cue.z-b.z)>cue.r+b.r+PCOLCore.TOUCH_EPS*2)) watch.initial=false;\n      }\n      trace.push(row);return row;\n    }\n    function record(contact,vix,viy,viz,vjx,vjy,vjz,closeSpeed) {\n      if (!(closeSpeed < -1e-6)) return;\n      const q=contact.bi.number===0?contact.bi:contact.isSS && contact.bj.number===0?contact.bj:null;\n      if (!contact.isSS) {\n        const normal=contact.normal || contact.bj.normal;\n        if(!q || contact.bj.end || contact.bj.tunnel || !normal || Math.abs(normal.y)>=.7)return;\n        if(!((q.v.x-vix)*normal.x+(q.v.y-viy)*normal.y+(q.v.z-viz)*normal.z>1e-7))return;\n        const row=sample();if(!row)return;\n        contacts.push({t:row.t,kind:'cushion',evolution:world.evolution,x:row.x,y:row.y,z:row.z});\n        for(const watch of watches.values())watch.initial=false;\n        return;\n      }\n      if(!q) {\n        if(!watches.size)return;\n        const bi=contact.bi,bj=contact.bj;\n        if(Math.hypot(bi.v.x-vix,bi.v.y-viy,bi.v.z-viz)>1e-7) {\n          const watch=watches.get(bi.index);if(watch)watch.initial=false;\n        }\n        if(Math.hypot(bj.v.x-vjx,bj.v.y-vjy,bj.v.z-vjz)>1e-7) {\n          const watch=watches.get(bj.index);if(watch)watch.initial=false;\n        }\n        return;\n      }\n      const cueIsI=q===contact.bi,obj=cueIsI?contact.bj:contact.bi;\n      const vx=cueIsI?vjx:vix,vy=cueIsI?vjy:viy,vz=cueIsI?vjz:viz;\n      const dx=obj.position.x-q.position.x,dy=obj.position.y-q.position.y,dz=obj.position.z-q.position.z;\n      const distance=Math.hypot(dx,dy,dz);\n      if(!distance || !(((obj.v.x-vx)*dx+(obj.v.y-vy)*dy+(obj.v.z-vz)*dz)/distance>1e-7))return;\n      const row=sample();if(!row)return;\n      const initialPush=watches.get(obj.index)?.initial;\n      if(initialPush && !pushedTouching.includes(obj.index))pushedTouching.push(obj.index);\n      const target=rules.ballOn===252 && rules.nominatedColour?2**rules.nominatedColour:rules.ballOn;\n      const allowed=touching.deemedHit || obj.index===rules.freeBallNominee || PCOLCore.ballOnNumbers(target).includes(obj.number);\n      const firstLegal=!contacts.some(c=>c.ballIndex!=null && c.legal===false);\n      contacts.push({t:row.t,ballIndex:obj.index,evolution:world.evolution,x:row.x,y:row.y,z:row.z,legal:allowed && firstLegal});\n      if(!initialPush)for(const watch of watches.values())watch.initial=false;\n    }\n    const solve=world.solver.solveContact;\n    world.solver.solveContact=function(contact) {\n      if(contact===world.tipContact&&contact.getCloseSpeed() < -1e-6)cueStrikes++;\n      const capture=recording && (contact.isSS || contact.bi.number===0);\n      // These pre-solve values are used only by this synchronous call. Scalars\n      // avoid temporary vector objects without sharing mutable contact state.\n      let vix,viy,viz,vjx,vjy,vjz;\n      if(capture) {\n        vix=contact.bi.v.x;viy=contact.bi.v.y;viz=contact.bi.v.z;\n        if(contact.isSS){vjx=contact.bj.v.x;vjy=contact.bj.v.y;vjz=contact.bj.v.z;}\n      }\n      const speed=capture?contact.getCloseSpeed():0;\n      const result=solve.call(this,contact);\n      if(capture)record(contact,vix,viy,viz,vjx,vjy,vjz,speed);\n      return result;\n    };\n    const internal=world.internalStep;\n    world.internalStep=function(){const result=internal.call(this);sample();return result;};\n    sim.stroke(Array.from(stroke));\n    recording=true;\n    const cue=world.balls[0];\n    for(const [i,watch] of watches) {\n      const obj=world.balls[i],dx=obj.position.x-cue.position.x,dy=obj.position.y-cue.position.y,dz=obj.position.z-cue.position.z;\n      const distance=Math.hypot(dx,dy,dz);\n      if(distance && (cue.v.x*dx+cue.v.y*dy+cue.v.z*dz)/distance < -1e-6)watch.initial=false;\n    }\n    sample();\n    const maxSteps=Number.isFinite(options.maxSteps)?Math.max(1,Math.min(100000,Math.floor(options.maxSteps))):12000;\n    const maxWallMs=Number.isFinite(options.maxWallMs)?Math.max(1,Math.min(60000,options.maxWallMs)):5000;\n    let reason=null;\n    do {\n      if(clock()-started>=maxWallMs){reason='wall-time limit';break;}\n      simulatedSeconds+=sim.step(setup.stepSize);steps++;\n      if(overflow){reason='trajectory limit';break;}\n      if(!world.balls.some(b=>b.active && !b.asleep))break;\n      if(steps>=maxSteps){reason='step limit';break;}\n    } while(true);\n    const balls=centres(world),status=reason?'incomplete':'complete';\n    const first=contacts.find(c=>c.ballIndex!=null);\n    const firstHits=first?[...new Set(contacts.filter(c=>c.ballIndex!=null && c.evolution===first.evolution && Math.hypot(c.x-first.x,c.y-first.y,c.z-first.z)<1e-5).map(c=>c.ballIndex))]:[];\n    const jump=PCOLCore.evaluateJump(trace,before,contacts,sim.ballRadius);\n    if(reason) {jump.indeterminate=true;jump.reason=reason;}\n    const potted=[...sim.result.pottedIndices],outOfBounds=[...sim.result.outOfBoundsIndices];\n    if(!custom && jump.indeterminate)reviewReasons.push('Jump assessment requires review.');\n    const adjudication=!custom && status==='complete' && !reviewReasons.length?PCOLCore.adjudicate({...rules,balls,firstHits,potted,outOfBounds,jumpFoul:jump.foul,touchingAtStart:touching.indices,pushedTouching,cueStrikes}):null;\n    const afterScores=(rules.scores||[]).map((score,index)=>score+(adjudication?.score>0 && index===rules.playerIndex?adjudication.score:adjudication?.score<0 && index!==rules.playerIndex?-adjudication.score:0));\n    const blackFrame=adjudication?PCOLCore.blackFrameOutcome({ballOn:rules.ballOn,balls:before,score:adjudication.score,scores:afterScores,respottedBlack:rules.respottedBlack}):null;\n    if(blackFrame){adjudication.frameOutcome=blackFrame;adjudication.continueBreak=false;}\n    const result={status,steps,simulatedSeconds,elapsedMs:clock()-started,balls,potted,outOfBounds,firstHits,contacts,stroke:Array.from(stroke),adjudication,jump};\n    if(reviewReasons.length)result.reviewReasons=reviewReasons;\n    if(status==='complete' && (custom || adjudication)) {\n      const Ref=req(54),ref=new Ref();\n      ref.syncAreaWithSimulator(sim);\n      preservePinkRespot(ref);\n      if(custom) {\n        if(!world.balls[0].active)ref._liveRespotCueBall(sim);\n      } else {\n        ref._liveRespot(adjudication.respots,[],sim);\n        if(adjudication.requiresInHand)ref._liveRespotCueBall(sim);\n        if(blackFrame==='respot'){\n          ref._liveRespotCueBall(sim);\n          sim.respotIndexDefault(world.balls.find(b=>b.number===7).index);\n        }\n      }\n      result.nextBalls=centres(world);\n      result.nextContext={ballOn:custom?65535:adjudication.nextBallOn,inHand:custom?1:adjudication.requiresInHand?2:0};\n      if(blackFrame==='respot')Object.assign(result.nextContext,{ballOn:128,inHand:2,respottedBlack:true,requiresDraw:true});\n      if(blackFrame==='end')Object.assign(result.nextContext,{ballOn:0,inHand:0});\n      // Only adjudicated legal continuations have an automatic next player/state.\n      // Fouls, cue placement and a drawn black decider require human decisions.\n      if(!custom && !adjudication.foulCode && !adjudication.requiresInHand && !result.nextContext.requiresDraw) {\n        const nextRules={...rules,...result.nextContext,scores:afterScores,\n          nRounds:(rules.nRounds || 0)+1,\n          playerIndex:adjudication.continueBreak?rules.playerIndex:(rules.playerIndex+1)%Math.max(1,afterScores.length),\n          nominatedColour:null,nominationSource:null,freeBallNominee:null,\n          freeBallAvailable:false,freeBallReview:false,freeBallDeclined:false,\n          respottedBlack:blackFrame==='end'?false:!!rules.respottedBlack};\n        result.nextSnapshot={sceneId:snapshot.sceneId,serial:world.serialize({balls:[]}),rules:nextRules,\n          balls:snapshot.balls.map(source=>{\n            const b=world.balls[source.i];\n            return {...source,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,spot:{...source.spot},transient:{rfPower:b.rfPower,\n              rfDir:{x:b.rfDir.x,y:b.rfDir.y,z:b.rfDir.z},penetration:b.penetration,\n              peneOffset:{x:b.peneOffset.x,y:b.peneOffset.y,z:b.peneOffset.z},collisionMask:b.collisionMask}};\n          })};\n      }\n    }\n    if(reason)result.reason=reason;\n    if(options.trace)result.trace=options.trace==='cue'?trace.map(({t,x,z})=>({t,x,z})):trace;\n    return result;\n  }\n  self.onmessage = event => {\n    const message=event.data;\n    try {\n      let result;\n      if(message.type==='init') {\n        if(!message.modules || !message.geometry || !message.geometry.data || !(message.stepSize>0) || !Number.isFinite(message.stepSize) || !Number.isInteger(message.maxIter) || message.maxIter<1 || message.maxIter>100)throw new Error('Invalid worker initialization');\n        setup={req:requireModules(message.modules),geometry:message.geometry,stepSize:message.stepSize,maxIter:message.maxIter};\n        result={ready:true};\n      } else if(message.type==='simulate') result=simulate(message);\n      else throw new Error('Unknown worker request');\n      self.postMessage({id:message.id,result});\n    } catch(error) {self.postMessage({id:message && message.id,error:String(error && error.message || error)});}\n  };\n}\n\nPCOLTrialWorker();";
+const PCOLTrialWorkerSource = "/* Per-stroke Float64 trajectory. Native ball identity/radius are immutable;\n * every physics/contact sample retains position and active state unchanged.\n * Object rows are materialized only for explicit external trace exports. */\nconst PCOLShotTrace = (() => {\n  function create(nativeBalls, {cap = 15000, seconds = false, chunkSize = 128} = {}) {\n    const metadata = nativeBalls.map(b => ({i:b.index,n:b.number,r:b.radius}));\n    const slots = new Map();\n    for(let i=0;i<metadata.length;i++)if(!slots.has(metadata[i].i))slots.set(metadata[i].i,i);\n    const stride = 1 + 4*metadata.length, chunks = [];\n    const last = {t:0,x:0,y:0,z:0};\n    let length = 0;\n    function sample(balls, time) {\n      if(length >= cap)return null;\n      const chunkIndex = Math.floor(length/chunkSize), offset = (length%chunkSize)*stride;\n      let data = chunks[chunkIndex];\n      if(!data)data=chunks[chunkIndex]=new Float64Array(Math.min(chunkSize,cap-chunkIndex*chunkSize)*stride);\n      data[offset]=time;\n      for(let i=0;i<metadata.length;i++) {\n        const b=balls[i],p=b.position,k=offset+1+i*4;\n        data[k]=p.x;data[k+1]=p.y;data[k+2]=p.z;data[k+3]=b.active===false?0:1;\n      }\n      last.t=length++;last.x=data[offset+1];last.y=data[offset+2];last.z=data[offset+3];\n      return last;\n    }\n    function readCue(index, out = {}) {\n      const data=chunks[Math.floor(index/chunkSize)],offset=(index%chunkSize)*stride;\n      out.t=index;out.x=data[offset+1];out.y=data[offset+2];out.z=data[offset+3];\n      if(seconds)out.seconds=data[offset];\n      return out;\n    }\n    function readBall(index, fallback, out = {}) {\n      const slot=slots.get(fallback.i);\n      if(slot===undefined){Object.assign(out,fallback);out.active=false;return out;}\n      const data=chunks[Math.floor(index/chunkSize)],offset=(index%chunkSize)*stride+1+slot*4;\n      const m=metadata[slot];\n      out.i=m.i;out.n=m.n;out.r=m.r;\n      out.x=data[offset];out.y=data[offset+1];out.z=data[offset+2];out.active=data[offset+3]!==0;\n      return out;\n    }\n    function toArray() {\n      const rows=new Array(length);\n      for(let i=0;i<length;i++) {\n        const row=readCue(i);\n        row.balls=metadata.map(b=>readBall(i,b));rows[i]=row;\n      }\n      return rows;\n    }\n    function toCueArray() {\n      const rows=new Array(length),point={};\n      for(let i=0;i<length;i++) {\n        readCue(i,point);rows[i]={t:point.t,x:point.x,z:point.z};\n      }\n      return rows;\n    }\n    return {get length(){return length;},sample,readCue,readBall,toArray,toCueArray,toJSON:toArray};\n  }\n  return {create};\n})();\n\n/* PCOL rule helpers. x/z are cloth coordinates; y is height. No game mutation.\n * WPBSA 2024-25: definitions 17/20, play 3/4/7/8/11/12.\n * https://wpbsa.com/wp-content/uploads/2198_WPBSA-Rulebook-2024-25.pdf\n */\nconst PCOLCore = (() => {\n  'use strict';\n  const RADIUS = 0.02625;\n  const RED = 2, COLOUR_ALL = 252;\n  const FOUL = Object.freeze({MISS:1, FIRST_HIT:2, POTTING:4, CUE_POTTED:8, OFF_TABLE:16, JUMP:32, FREE_BALL_SNOOKER:64, PUSH:128, DOUBLE_HIT:256});\n  // Referee tolerance: the observed 0.188 mm resting gap counts as touching.\n  // Keep physical spotting clearance independent of this judgement tolerance.\n  const CONTACT_EPS = 1e-5, TOUCH_EPS = 2e-4;\n  const unique = a => [...new Set(a)];\n  const radius = (b, fallback = RADIUS) => b.r > 0 ? b.r : fallback;\n  const hypot2 = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);\n  const active = b => b.active !== false;\n  const ballOnNumbers = mask => [1,2,3,4,5,6,7].filter(n => (mask & (1 << n)) !== 0);\n\n  // PCOL's x axis runs from Baulk to the black end. Leave a small gap beyond\n  // the touching tolerance, and only consider Baulk after the top side is full.\n  function pinkRespotX(balls, pink, minX, maxX) {\n    const intervals=[];\n    for(const b of balls){\n      if(!active(b)||b.i===pink.i)continue;\n      const rr=radius(pink)+radius(b)+2*CONTACT_EPS;\n      const across=(b.y-pink.y)**2+(b.z-pink.z)**2;\n      if(across>=rr*rr)continue;\n      const half=Math.sqrt(rr*rr-across);\n      intervals.push([b.x-half,b.x+half]);\n    }\n    intervals.sort((a,b)=>a[0]-b[0]);\n    const blocked=[];\n    for(const range of intervals){\n      const last=blocked[blocked.length-1];\n      if(last&&range[0]<last[1])last[1]=Math.max(last[1],range[1]);\n      else blocked.push(range);\n    }\n    let x=pink.x;\n    for(const [left,right] of blocked){\n      if(x<=left)break;\n      if(x<right)x=right;\n    }\n    if(x<=maxX)return x;\n    x=pink.x;\n    for(let i=blocked.length-1;i>=0;i--){\n      const [left,right]=blocked[i];\n      if(x>=right)break;\n      if(x>left)x=left;\n    }\n    return x>=minX?x:null;\n  }\n\n  function touchingStatus({balls,ballOn,nominatedColour=null,freeBallNominee=null}) {\n    const cue=balls.find(b=>b.n===0 && active(b));\n    const touched=cue?balls.filter(b=>b.n>0 && active(b) && Math.hypot(cue.x-b.x,cue.y-b.y,cue.z-b.z)<=radius(cue)+radius(b)+TOUCH_EPS):[];\n    const on=ballOn===COLOUR_ALL?(nominatedColour?[nominatedColour]:[]):ballOnNumbers(ballOn);\n    const eligible=freeBallNominee!=null?touched.filter(b=>b.i===freeBallNominee):touched.filter(b=>on.includes(b.n));\n    return {indices:touched.map(b=>b.i),eligibleIndices:eligible.map(b=>b.i),deemedHit:eligible.length>0,requiresColourDeclaration:ballOn===COLOUR_ALL && touched.some(b=>b.n>=2),tolerance:TOUCH_EPS};\n  }\n\n  function remainingPoints(balls, ballOn, {freeBall = false} = {}) {\n    if (!ballOn || ballOn === 65535) return 0;\n    const live = balls.filter(b => active(b) && b.n > 0);\n    const reds = live.filter(b => b.n === 1).length;\n    let maximum = reds || ballOn === COLOUR_ALL ? reds * 8 + 27 + (ballOn === COLOUR_ALL ? 7 : 0) : live.filter(b => b.n >= 2).reduce((sum,b) => sum+b.n,0);\n    if (freeBall) maximum += ballOn === RED ? 8 : ballOn === COLOUR_ALL ? 7 : ballOnNumbers(ballOn)[0] || 0;\n    return maximum;\n  }\n\n  // User-requested optional concession threshold, not a mandatory match rule.\n  function concessionStatus({balls, ballOn, scores, playerIndex, freeBall = false, threshold = 1}) {\n    const maximum = remainingPoints(balls,ballOn,{freeBall});\n    const valid = scores.length === 2 && (playerIndex === 0 || playerIndex === 1) && ballOn > 0 && ballOn !== 65535;\n    const deficit = valid ? scores[1-playerIndex]-scores[playerIndex] : 0;\n    const excess = deficit-maximum;\n    return {eligible:valid && excess >= threshold,playerIndex,remaining:maximum,deficit,excess,threshold};\n  }\n\n  /** User-customised early finish, separate from the official final-black rule.\n   * Supply settled post-stroke balls/scores, including foul penalties and respots.\n   * A known free-ball opportunity adds its possible points; unresolved review\n   * cannot establish an early finish. Omit actor/continueBreak for a stable turn.\n   * At 17 over only the leader's legal scoring break may continue. The separate\n   * blackLeadThreshold is a score lead (default 8), not points over the table.\n   * On the last Black, playerIndex is the incoming player: the leader keeps\n   * their shot, including after potting Pink; the trailing player's turn ends it.\n   */\n  function earlyFrameOutcome({balls,ballOn,scores,playerIndex=null,actor=null,continueBreak=false,freeBall=false,freeBallReview=false,threshold=17,blackLeadThreshold=8}) {\n    if(!Array.isArray(balls)||!Array.isArray(scores)||scores.length!==2||!scores.every(Number.isFinite)||\n      !ballOn||ballOn===65535||freeBallReview||freeBall==null||scores[0]===scores[1])return null;\n    const winner=scores[0]>scores[1]?0:1,loser=1-winner;\n    const deficit=scores[winner]-scores[loser],remaining=remainingPoints(balls,ballOn,{freeBall}),excess=deficit-remaining;\n    const live=balls.filter(b=>b.n>0&&active(b));\n    if(ballOn===128&&live.length===1&&live[0].n===7&&Number.isFinite(blackLeadThreshold)&&deficit>=blackLeadThreshold)\n      return playerIndex===loser?{winner,loser,deficit,remaining,excess,threshold:blackLeadThreshold,reason:'black-lead'}:null;\n    if(Number.isFinite(threshold)&&excess>=threshold&&!(actor===winner&&continueBreak===true))\n      return {winner,loser,deficit,remaining,excess,threshold,reason:'excess-threshold'};\n    return null;\n  }\n\n  // Earliest intersection of a cue-centre ray with a ball's expanded disc.\n  function rayBlocker(cue, direction, length, b, cueRadius, eps) {\n    const dx = b.x - cue.x, dz = b.z - cue.z;\n    const projection = dx * direction.x + dz * direction.z;\n    const rr = cueRadius + radius(b);\n    const perpendicular2 = dx * dx + dz * dz - projection * projection;\n    if (perpendicular2 >= rr * rr - eps || projection + rr < 0) return false;\n    const enter = projection - Math.sqrt(Math.max(0, rr * rr - perpendicular2));\n    return enter < length - eps && projection + Math.sqrt(Math.max(0, rr * rr - perpendicular2)) > eps;\n  }\n\n  /** Both extreme physical contacts must be available on at least one ball on.\n   * Cushions and other balls on cannot cause a snooker under definition 17.\n   * options.inHand requires an all-positions proof which this helper does not\n   * attempt: it returns null, never true based on a finite sample of the D.\n   * Effective blockers are returned for the free-ball safety restriction.\n   */\n  function isSnookered(balls, ballOn, cuePosition, options = {}) {\n    if (options.inHand) return {snookered:null, indeterminate:true, clearTargets:[], details:[], effectiveSnookeringBalls:[], reason:'All legal cue positions in the D must be considered.'};\n    const cue = cuePosition || balls.find(b => b.n === 0 && active(b));\n    const on = ballOnNumbers(ballOn);\n    const targets = balls.filter(b => active(b) && on.includes(b.n));\n    if (!cue || targets.length === 0) return {snookered:null, indeterminate:true, clearTargets:[], details:[], effectiveSnookeringBalls:[], reason:'Cue position or ball on unavailable.'};\n    const rc = radius(cue, options.radius || RADIUS), eps = options.epsilon || 1e-8;\n    const blockers = balls.filter(b => active(b) && b.n > 0 && !on.includes(b.n));\n    const details = targets.map(target => {\n      const distance = hypot2(cue, target), rr = rc + radius(target);\n      if (distance <= rr + eps) return {target:target.i, indeterminate:true, leftBlockedBy:[], rightBlockedBy:[], effective:[]};\n      const angle = Math.atan2(target.z - cue.z, target.x - cue.x);\n      const halfAngle = Math.asin(Math.min(1, rr / distance));\n      const travel = Math.sqrt(distance * distance - rr * rr);\n      const edge = sign => {\n        const theta = angle + sign * halfAngle;\n        const direction = {x:Math.cos(theta), z:Math.sin(theta)};\n        return blockers.filter(b => rayBlocker(cue, direction, travel, b, rc, eps)).map(b => b.i);\n      };\n      const leftBlockedBy = edge(1), rightBlockedBy = edge(-1);\n      const both = unique([...leftBlockedBy, ...rightBlockedBy]);\n      const nearest = Math.min(...both.map(i => hypot2(cue, balls.find(b => b.i === i))));\n      const effective = both.filter(i => Math.abs(hypot2(cue, balls.find(b => b.i === i)) - nearest) <= eps);\n      return {target:target.i, leftBlockedBy, rightBlockedBy, effective, clear:both.length === 0};\n    });\n    const clearTargets = details.filter(d => d.clear).map(d => d.target);\n    const indeterminate = !clearTargets.length && details.some(d => d.indeterminate);\n    const snookered = clearTargets.length ? false : indeterminate ? null : true;\n    let effectiveSnookeringBalls = snookered ? details[0].effective.slice() : [];\n    for (const d of details) effectiveSnookeringBalls = effectiveSnookeringBalls.filter(i => d.effective.includes(i));\n    return {snookered, indeterminate, clearTargets, details, effectiveSnookeringBalls};\n  }\n\n  /** Proves visibility of any part of a legal ball, not both extreme edges.\n   * Ray collision order can only change at disc tangent angles or the angles\n   * of expanded-disc intersections. Test each angular cell plus its boundaries.\n   * This handles arbitrarily narrow positive gaps without a fixed angle grid.\n   */\n  function hasDirectHit(balls, ballOn, cuePosition, options = {}) {\n    const unknown=reason=>({hasDirectHit:null,indeterminate:true,target:null,direction:null,reason});\n    if(options.inHand) return unknown('All legal cue positions in the D must be considered.');\n    const cue=cuePosition || balls.find(b=>b.n===0 && active(b));\n    if(!cue) return unknown('Cue position unavailable.');\n    const on=ballOnNumbers(ballOn), rc=radius(cue,options.radius || RADIUS),eps=options.epsilon || 1e-9;\n    const objects=balls.filter(b=>b.n>0 && active(b));\n    if(!objects.some(b=>on.includes(b.n))) return unknown('Ball on unavailable.');\n    const circles=objects.map(b=>({b,x:b.x-cue.x,z:b.z-cue.z,r:rc+radius(b)}));\n    const tau=2*Math.PI,normal=a=>(a%tau+tau)%tau;\n    const angles=[];\n    let touching=false;\n    for(const c of circles) {\n      const d=Math.hypot(c.x,c.z);\n      if(d<=c.r+eps){touching=true;continue;}\n      const angle=Math.atan2(c.z,c.x),h=Math.asin(c.r/d);\n      angles.push(normal(angle-h),normal(angle+h),normal(angle));\n    }\n    for(let i=0;i<circles.length;i++) for(let j=i+1;j<circles.length;j++) {\n      const a=circles[i],b=circles[j],dx=b.x-a.x,dz=b.z-a.z,d=Math.hypot(dx,dz);\n      if(d<=eps || d>a.r+b.r+eps || d<Math.abs(a.r-b.r)-eps)continue;\n      const along=(a.r*a.r-b.r*b.r+d*d)/(2*d),height=Math.sqrt(Math.max(0,a.r*a.r-along*along));\n      const x=a.x+along*dx/d,z=a.z+along*dz/d;\n      angles.push(normal(Math.atan2(z+height*dx/d,x-height*dz/d)),normal(Math.atan2(z-height*dx/d,x+height*dz/d)));\n    }\n    angles.sort((a,b)=>a-b);\n    const candidates=angles.slice();\n    for(let i=0;i<angles.length;i++)candidates.push(normal((angles[i]+(i+1<angles.length?angles[i+1]:angles[0]+tau))/2));\n    for(const angle of candidates) {\n      const direction={x:Math.cos(angle),z:Math.sin(angle)};\n      const entries=[];\n      for(const c of circles) {\n        const projection=c.x*direction.x+c.z*direction.z;\n        const discriminant=c.r*c.r-(c.x*c.x+c.z*c.z-projection*projection);\n        if(discriminant < -eps) continue;\n        const root=Math.sqrt(Math.max(0,discriminant)),near=projection-root,far=projection+root;\n        if(far<eps)continue;\n        entries.push({i:c.b.i,n:c.b.n,t:Math.max(0,near)});\n      }\n      if(!entries.length)continue;\n      const nearest=Math.min(...entries.map(e=>e.t));\n      const first=entries.filter(e=>Math.abs(e.t-nearest)<=eps);\n      if(first.every(e=>on.includes(e.n)) && nearest>eps) {\n        const point={x:cue.x+direction.x*nearest,y:cue.y,z:cue.z+direction.z*nearest};\n        if(options.isPathClear && !options.isPathClear(cue,point))continue;\n        return {hasDirectHit:true,indeterminate:false,target:first[0].i,direction,contactPoint:point,reason:'Direct first contact with a ball on is available.'};\n      }\n    }\n    if(touching) return unknown('Cue is touching or overlapping an object; touching-ball ruling required.');\n    return {hasDirectHit:false,indeterminate:false,target:null,direction:null,reason:'Every straight ray to a ball on first meets a ball not on.'};\n  }\n\n  // Nominate BEFORE the stroke from the current horizontal aim, never from its\n  // eventual outcome. A farther ball on the same ray cannot obscure the intent\n  // to hit the nearer ball. Touching/tangent/tied contacts need a declaration.\n  function inferColour(balls, direction) {\n    const unknown = reason => ({colour:null,ballIndex:null,reason});\n    const cue = balls.find(b => b.n === 0 && active(b));\n    const length = Math.hypot(direction?.x, direction?.z);\n    if (!cue || !Number.isFinite(length) || length < 1e-9) return unknown('invalid-aim');\n    const dx = direction.x / length, dz = direction.z / length, entries = [];\n    for (const b of balls) {\n      if (!active(b) || b.n < 1) continue;\n      const x = b.x-cue.x, z = b.z-cue.z, rr = radius(cue)+radius(b);\n      if (Math.hypot(x,z) <= rr+1e-8) return unknown('touching');\n      const projection = x*dx+z*dz;\n      const disc = rr*rr-(x*x+z*z-projection*projection);\n      if (projection <= 0 || disc < -1e-12) continue;\n      entries.push({b,t:projection-Math.sqrt(Math.max(0,disc)),tangent:disc <= 1e-12});\n    }\n    entries.sort((a,b) => a.t-b.t);\n    if (!entries.length) return unknown('no-direct-target');\n    const first = entries[0];\n    if (first.tangent || entries[1] && entries[1].t-first.t < 1e-7) return unknown('ambiguous');\n    if (first.b.n < 2) return unknown('blocked-by-red');\n    return {colour:first.b.n,ballIndex:first.b.i,reason:'direct'};\n  }\n\n  function lerp(a, b, u) { return {x:a.x+(b.x-a.x)*u, y:a.y+(b.y-a.y)*u, z:a.z+(b.z-a.z)*u}; }\n  function sampleBall(sample, b, indexed) {\n    if (!sample.balls) return b;\n    // Only rows whose IDs exactly match every array index may bypass find.\n    // Other rows retain its first-match behavior, including duplicate IDs.\n    const found = indexed && Number.isInteger(b.i) && b.i>=0 && b.i<sample.balls.length ? sample.balls[b.i] : sample.balls.find(v => v.i === b.i);\n    return found || {...b,active:false};\n  }\n  function traceReader(trace) {\n    if(typeof trace.readCue==='function' && typeof trace.readBall==='function')\n      return {length:trace.length,cue:(k,out)=>trace.readCue(k,out),ball:(k,b,out)=>trace.readBall(k,b,out),hasBalls:()=>true};\n    // Validate legacy object rows locally. Non-indexed/duplicate IDs retain\n    // the original first-match lookup and missing-ball behavior.\n    const indexedRows=new Uint8Array(trace.length);\n    for(let k=0;k<trace.length;k++) {\n      const row=trace[k].balls;\n      if(!row)continue;\n      let indexed=true;\n      for(let i=0;i<row.length;i++)if(!row[i] || row[i].i!==i){indexed=false;break;}\n      if(indexed)indexedRows[k]=1;\n    }\n    return {length:trace.length,cue:k=>trace[k],ball:(k,b)=>sampleBall(trace[k],b,indexedRows[k]),hasBalls:k=>!!trace[k].balls};\n  }\n  function ballAt(reader, b, t) {\n    const a={},next={},objectA={},objectB={};\n    let j = 0;\n    while (j + 1 < reader.length && reader.cue(j+1,next).t < t) j++;\n    if (j + 1 === reader.length) return reader.ball(j,b,objectA);\n    const current=reader.cue(j,a),following=reader.cue(j+1,next);\n    const u = Math.max(0, Math.min(1, (t-current.t) / (following.t-current.t || 1)));\n    return lerp(reader.ball(j,b,objectA),reader.ball(j+1,b,objectB),u);\n  }\n\n  // Relative swept-disc overlap, retaining only points with the cue above\n  // the object's surface. Merely lifting the cue/using masse is not a foul.\n  function sweptOver(a, b, objectA, objectB, rr, eps) {\n    const px=a.x-objectA.x, py=a.y-objectA.y, pz=a.z-objectA.z;\n    const vx=b.x-objectB.x-px, vy=b.y-objectB.y-py, vz=b.z-objectB.z-pz;\n    const limit2=(rr-eps)*(rr-eps);\n    const A = vx*vx+vz*vz, B = 2*(px*vx+pz*vz), C = px*px+pz*pz-limit2;\n    let lo = 0, hi = 1;\n    if (A < eps*eps) { if (C >= 0) return null; }\n    else {\n      const D = B*B-4*A*C;\n      if (D <= 0) return null;\n      lo = Math.max(0,(-B-Math.sqrt(D))/(2*A));\n      hi = Math.min(1,(-B+Math.sqrt(D))/(2*A));\n      if (lo > hi) return null;\n    }\n    // Total distance squared is convex. Endpoints and horizontal closest\n    // approach catch above-surface passage without treating overlap caused\n    // by the collision solver's penetration tolerance as an illegal jump.\n    const near = A > 0 ? Math.max(lo,Math.min(hi,-B/(2*A))) : (lo+hi)/2;\n    for (let i=0;i<4;i++) {\n      const u=i===0?near:i===1?(lo+hi)/2:i===2?lo+(hi-lo)*1e-4:hi-(hi-lo)*1e-4;\n      const qx=px+u*vx, qy=py+u*vy, qz=pz+u*vz;\n      const horizontal2 = qx*qx+qz*qz;\n      if (qy > eps && horizontal2 < limit2 && horizontal2+qy*qy >= limit2) return {u,position:lerp(a,b,u)};\n    }\n    return null;\n  }\n\n  /** Physics-step trace; optional trace[k].balls records moving object centres.\n   * contactEvents: {t,ballIndex,legal?}; cushions: {t,kind:'cushion'}.\n   * legal is only needed for exception 20(c). Missing legal metadata is treated\n   * conservatively; other rule checks still reject an illegal first hit.\n   * Borderline/unfinished airborne paths are indeterminate, not auto-penalised.\n   */\n  function evaluateJump(trace, ballsAtStart, contactEvents = [], fallbackRadius = RADIUS) {\n    if (!trace || trace.length < 2) return {foul:false, offendingBalls:[], reason:'Insufficient trajectory.', indeterminate:true, details:[]};\n    const reader=traceReader(trace);\n    const cue = ballsAtStart.find(b => b.n === 0) || {r:fallbackRadius,...reader.cue(0,{})};\n    const rc = radius(cue,fallbackRadius), eps = Math.max(1e-6,rc*0.002);\n    const groundY = cue.y;\n    const events = contactEvents.slice().sort((a,b) => a.t-b.t);\n    const objects = ballsAtStart.filter(b => b.n > 0 && active(b));\n    const touching = new Set(objects.filter(b => Math.hypot(cue.x-b.x,cue.y-b.y,cue.z-b.z) <= rc+radius(b,fallbackRadius)+eps).map(b => b.i));\n    const contacts = events.filter(e => e.ballIndex != null && objects.some(b => b.i === e.ballIndex));\n    const first = contacts[0];\n    const offendingBalls = [], details = [];\n    let indeterminate = false;\n    const cueA={},cueB={},objectA={},objectB={},takeoff={},landing={};\n    for (const object of objects) {\n      const passages=[];\n      let wasOver=false;\n      let previous=reader.ball(0,object,objectA);\n      for (let k=0;k<trace.length-1;k++) {\n        const a=reader.cue(k,cueA),b=reader.cue(k+1,cueB),oa=previous,ob=reader.ball(k+1,object,k%2?objectA:objectB);\n        previous=ob;\n        if (oa.active === false || ob.active === false) {wasOver=false;continue;}\n        const over=sweptOver(a,b,oa,ob,rc+radius(object,fallbackRadius),eps);\n        if (over && !wasOver) passages.push({k,t:a.t+(b.t-a.t)*over.u,position:over.position});\n        wasOver=!!over;\n      }\n      for(const passage of passages) {\n      const detail = {ballIndex:object.i,t:passage.t};\n      if (first && first.t <= passage.t && first.ballIndex !== object.i && !touching.has(first.ballIndex)) {\n        details.push({...detail,exception:'20(a): first hit another non-touching object ball.'});\n        continue;\n      }\n      const prior = contacts.find(e => e.ballIndex===object.i && e.t<=passage.t && !touching.has(e.ballIndex));\n      if (prior && prior.legal !== false && events.some(e => e.t > prior.t && e.t < passage.t && (e.kind==='cushion' || (e.ballIndex!=null && e.ballIndex!==object.i)))) {\n        details.push({...detail,exception:'20(c): returned after object/cushion contact.'});\n        continue;\n      }\n      // Find the takeoff and landing belonging to this airborne passage.\n      let start=passage.k;\n      while(start>0 && reader.cue(start,takeoff).y>groundY+eps) start--;\n      let land=passage.k+1;\n      while(land<trace.length && reader.cue(land,landing).y>groundY+eps) land++;\n      const startPoint=reader.cue(start,takeoff),landPoint=land<trace.length?reader.cue(land,landing):null;\n      const hitDuringFlight = contacts.find(e => e.ballIndex===object.i && e.t>=startPoint.t && (!landPoint || e.t<=landPoint.t));\n      if (hitDuringFlight && !touching.has(object.i)) {\n        if (land===trace.length) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Contacted ball; landing not yet recorded.'});continue;}\n        if(!reader.hasBalls(land)) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Contacted ball current position at landing is unavailable.'});continue;}\n        const objectAtLanding=ballAt(reader,object,landPoint.t);\n        const approach=ballAt(reader,object,passage.t);\n        const vx=approach.x-startPoint.x,vz=approach.z-startPoint.z;\n        const length=Math.hypot(vx,vz);\n        const far=length ? ((landPoint.x-objectAtLanding.x)*vx+(landPoint.z-objectAtLanding.z)*vz)/length : 0;\n        if (far <= eps) {details.push({...detail,exception:'20(b): hit airborne, landed on near side of the ball current position.'});continue;}\n        if (far < rc+radius(object,fallbackRadius)+eps) {indeterminate=true;details.push({...detail,indeterminate:true,reason:'Landing close to dividing plane; manual decision required.'});continue;}\n      }\n      offendingBalls.push(object.i);\n      details.push({...detail,foul:true,reason:'Cue passed above an object ball without a recorded exception.'});\n      }\n    }\n    return {foul:offendingBalls.length>0,offendingBalls:unique(offendingBalls),reason:offendingBalls.length?'Illegal jump over an object ball.':indeterminate?'Some airborne contact needs review.':'No illegal jump found.',indeterminate,details};\n  }\n\n  // Section 3.4: assess the scores after the final Black's pot or foul.\n  function blackFrameOutcome({ballOn,balls,score,scores,respottedBlack=false}) {\n    if(ballOn!==128 || score===0 || scores.length!==2)return null;\n    const remaining=balls.filter(b=>b.n>0 && active(b));\n    if(remaining.length!==1 || remaining[0].n!==7)return null;\n    return !respottedBlack && scores[0]===scores[1]?'respot':'end';\n  }\n\n  /** Indices identify firstHits (simultaneous), potted, outOfBounds and nominee.\n   * nominatedColour is a number 2..7. balls contains final positions and all\n   * objects including inactive entries. Removed indices are also excluded when\n   * callers supply pre-stroke active flags. Colours to respot are indices.\n   * This pure function does not decide discretionary Foul and a Miss, restore\n   * positions, choose colour spot geometry, or decide a tied-frame re-spot.\n   */\n  function adjudicate({ballOn,nominatedColour=null,freeBallNominee=null,balls,firstHits=[],potted=[],outOfBounds=[],jumpFoul=false,touchingAtStart=[],pushedTouching=[],cueStrikes=1}) {\n    const byIndex=new Map(balls.map(b=>[b.i,b]));\n    const hits=unique(firstHits).map(i=>byIndex.get(i)).filter(b=>b && b.n>0);\n    const pots=unique(potted).map(i=>byIndex.get(i)).filter(Boolean);\n    const outs=unique(outOfBounds).map(i=>byIndex.get(i)).filter(Boolean);\n    const removed=new Set([...potted,...outOfBounds]);\n    const onNumbers=ballOnNumbers(ballOn), colourChoice=ballOn===COLOUR_ALL;\n    const nominee=freeBallNominee==null?null:byIndex.get(freeBallNominee);\n    let on=onNumbers.length===1?onNumbers[0]:null;\n    if(colourChoice) on=nominatedColour>=2 && nominatedColour<=7?nominatedColour:(hits.length===1 && hits[0].n>=2?hits[0].n:null);\n    let foulCode=0,penalty=0;\n    const reasons=[];\n    const penalise=(code,value,reason)=>{foulCode|=code;penalty=Math.max(penalty,4,value||0);reasons.push(reason);};\n    const baseValue=on || (colourChoice?7:4);\n    const validNominee=nominee && nominee.n>0 && nominee.n!==on;\n    const value=b=>validNominee && b.i===nominee.i?baseValue:b.n;\n    const touching=unique(touchingAtStart).map(i=>byIndex.get(i)).filter(b=>b && b.n>0);\n    const deemedHit=validNominee?touching.some(b=>b.i===nominee.i):on!=null && touching.some(b=>b.n===on);\n    if(freeBallNominee!=null && !validNominee) penalise(FOUL.FIRST_HIT,baseValue,'Invalid free-ball nomination.');\n    if(!deemedHit && hits.length===0) penalise(FOUL.MISS,baseValue,'No object ball contacted.');\n    else if(!deemedHit) {\n      const firstLegal=validNominee?hits.some(b=>b.i===nominee.i) && hits.every(b=>b.i===nominee.i || b.n===on):on!=null && hits.every(b=>b.n===on);\n      if(!firstLegal) penalise(FOUL.FIRST_HIT,Math.max(baseValue,...hits.map(value)),'First contact was not on.');\n    }\n    for(const i of unique(pushedTouching)) {\n      const b=touching.find(b=>b.i===i);\n      if(b) penalise(FOUL.PUSH,Math.max(baseValue,value(b)),'Striking the cue caused an initially touching ball to move before playing away.');\n    }\n    if(cueStrikes>1)penalise(FOUL.DOUBLE_HIT,baseValue,'The cue tip struck the cue ball more than once in this stroke.');\n    for(const b of pots) {\n      if(b.n===0) penalise(FOUL.CUE_POTTED,baseValue,'Cue ball pocketed.');\n      else if(b.n!==on && !(validNominee && b.i===nominee.i)) penalise(FOUL.POTTING,Math.max(baseValue,value(b)),'Ball not on pocketed.');\n    }\n    for(const b of outs) penalise(FOUL.OFF_TABLE,Math.max(baseValue,value(b)),'Ball forced off the table.');\n    if(jumpFoul===true || jumpFoul && jumpFoul.foul) penalise(FOUL.JUMP,baseValue,'Illegal jump.');\n    let points=on===1?pots.filter(b=>b.n===1 || validNominee && b.i===nominee.i).length:pots.some(b=>b.n===on || validNominee && b.i===nominee.i)?(on||0):0;\n    const finalBalls=balls.map(b=>removed.has(b.i)?{...b,active:false}:b);\n    let freeBallSafety=null;\n    if(validNominee && !foulCode && points===0) {\n      const remaining=finalBalls.filter(b=>b.n>0 && active(b));\n      const twoColoursWithBlack=remaining.length===2 && remaining.every(b=>b.n>=2) && remaining.some(b=>b.n===7);\n      if(!twoColoursWithBlack) {\n        freeBallSafety=isSnookered(finalBalls,1<<on);\n        if(freeBallSafety.snookered && freeBallSafety.effectiveSnookeringBalls.includes(nominee.i)) penalise(FOUL.FREE_BALL_SNOOKER,baseValue,'Nominated free ball left an effective snooker after a non-scoring stroke.');\n      }\n    }\n    const score=foulCode?-penalty:points;\n    const redsRemain=finalBalls.some(b=>b.n===1 && active(b));\n    const canonicalPotted=pots.some(b=>b.n===on && !(validNominee && b.i===nominee.i));\n    let nextBallOn=ballOn;\n    if(score>0) {\n      if(ballOn===RED) nextBallOn=COLOUR_ALL;\n      else if(colourChoice) nextBallOn=redsRemain?RED:4;\n      else if(canonicalPotted) nextBallOn=on===7?0:1<<(on+1);\n    } else if(ballOn===RED || colourChoice) nextBallOn=redsRemain?RED:4;\n    // The host retains responsibility for tied scores and re-spotted black.\n    if(on===7 && !colourChoice && score<0 && !validNominee) nextBallOn=0;\n    const respots=unique([...pots,...outs].filter(b=>b.n>=2 && (foulCode || ballOn===RED || colourChoice || validNominee && b.i===nominee.i)).map(b=>b.i)).sort((a,b)=>byIndex.get(b).n-byIndex.get(a).n);\n    const cueBall=balls.find(b=>b.n===0);\n    const requiresInHand=!!cueBall && (removed.has(cueBall.i) || !active(cueBall));\n    return {score,foulCode,nextBallOn,respots,requiresInHand,ballOnUsed:on,penalty:foulCode?penalty:0,freeBallNominee:validNominee?nominee.i:null,reasons,freeBallSafety,canonicalPotted,continueBreak:score>0,cueStrikes,touching:{indices:touching.map(b=>b.i),deemedHit,pushedIndices:unique(pushedTouching)}};\n  }\n  return Object.freeze({RADIUS,RED,COLOUR_ALL,FOUL,CONTACT_EPS,TOUCH_EPS,ballOnNumbers,pinkRespotX,touchingStatus,remainingPoints,concessionStatus,earlyFrameOutcome,isSnookered,hasDirectHit,inferColour,evaluateJump,blackFrameOutcome,adjudicate});\n})();\n\n/* Isolated full-shot runner. This function is stringified into a dedicated worker. */\nfunction PCOLTrialWorker() {\n  'use strict';\n  let setup = null;\n  const requireModules = sources => {\n    const cache = Object.create(null);\n    function req(id) {\n      if (cache[id]) return cache[id].exports;\n      if (typeof sources[id] !== 'string') throw new Error('Missing physics module ' + id);\n      const mod = cache[id] = {exports:{}};\n      new Function('return (' + sources[id] + ')')()(mod, mod.exports, req);\n      return mod.exports;\n    }\n    req.o = (object, key) => Object.prototype.hasOwnProperty.call(object, key);\n    req.d = (exports, key, getter) => {\n      if (!req.o(exports,key)) Object.defineProperty(exports,key,{enumerable:true,get:getter});\n    };\n    req.r = exports => {\n      if (typeof Symbol !== 'undefined' && Symbol.toStringTag) Object.defineProperty(exports,Symbol.toStringTag,{value:'Module'});\n      Object.defineProperty(exports,'__esModule',{value:true});\n    };\n    req.n = mod => {\n      const getter = mod && mod.__esModule ? () => mod.default : () => mod;\n      req.d(getter,'a',getter); return getter;\n    };\n    return req;\n  };\n  const clock = () => performance.now();\n  const centres = world => world.balls.map(b => ({i:b.index,n:b.number,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,r:b.radius}));\n\n  function preservePinkRespot(ref) {\n    const original=ref._liveRespotColorBalls;\n    ref._liveRespotColorBalls=function(list,sim) {\n      if(!list.some(b=>b.number===6))return original.call(this,list,sim);\n      const clearance=1.05*sim.ballRadius,reserved=new Set();\n      for(let i=list.length-1;i>=0;i--) {\n        const b=list[i];reserved.add(b.number);\n        if(!sim.touchBalls(b.index,b.spot,clearance)){list.splice(i,1);sim.respotIndexDefault(b.index);}\n      }\n      list.sort((a,b)=>a.number-b.number);\n      const colours=sim.getBalls().filter(b=>b.number>=2).sort((a,b)=>b.number-a.number);\n      for(const spotBall of colours) {\n        if(!list.length)break;\n        const b=list[list.length-1];\n        if(!reserved.has(spotBall.number)&&!sim.touchBalls(b.index,spotBall.spot,clearance))sim.resetBallPosition(list.pop(),spotBall.spot);\n      }\n      while(list.length) {\n        const b=list.pop();\n        if(b.number!==6){original.call(this,[b],sim);continue;}\n        const ground=sim.ground,margin=sim.ballRadius+2*PCOLCore.CONTACT_EPS;\n        const minX=ground.centerPosition.x-ground.size.x/2+margin,maxX=ground.centerPosition.x+ground.size.x/2-margin;\n        const bs=sim.getBalls().map(b=>({i:b.index,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,r:b.radius}));\n        const x=PCOLCore.pinkRespotX(bs,{i:b.index,...b.spot,r:b.radius},minX,maxX);\n        if(x===null)throw new Error('No legal pink-ball respot position');\n        sim.resetBallXYZ(b,x,b.spot.y,b.spot.z);\n      }\n    };\n  }\n\n  function simulate(message) {\n    if (!setup) throw new Error('Worker is not initialized');\n    const {snapshot,stroke} = message, options = message.options || {};\n    if (!snapshot || !snapshot.serial || !Array.isArray(snapshot.balls) || !snapshot.rules) throw new Error('Invalid trial snapshot');\n    if ((!Array.isArray(stroke) && !ArrayBuffer.isView(stroke)) || stroke.length !== 8 || !Array.from(stroke).every(Number.isFinite)) throw new Error('Invalid trial stroke');\n    const started = clock(), req = setup.req;\n    const World=req(39), Ball=req(49), Simulator=req(50), Solver=req(21), MeshBody=req(84);\n    const world = new World();\n    world.stepSize=setup.stepSize;\n    world.solver=new Solver();\n    world.solver.maxIter=setup.maxIter;\n    const mesh=new MeshBody(setup.geometry.data);\n    mesh.id=setup.geometry.id;\n    for(const group of mesh.groups) {\n      const nt=setup.geometry.data[group.name].nt;\n      if(nt) {\n        const uv=req(80);\n        const table=uv.createNTableWithImgData({width:0,height:0,data:[]});\n        Object.assign(table,nt);\n        uv.extendPolyGroup(group,table);\n      }\n    }\n    world.setMeshBody(mesh);\n    for (const b of snapshot.balls) {\n      if (b.i !== world.balls.length || !(b.r>0) || !(b.mass>0) || !b.spot) throw new Error('Invalid ball configuration');\n      world.addBall(new Ball(b.n,b.r,b.mass,b.spot.x,b.spot.y,b.spot.z,b.i));\n    }\n    world.reset();\n    world.deserialize(snapshot.serial);\n    for(const source of snapshot.balls) {\n      const transient=source.transient;\n      if(!transient)continue;\n      const ball=world.balls[source.i];\n      for(const key of ['rfPower','penetration','collisionMask']) {\n        if(transient[key]!==undefined)ball[key]=transient[key];\n      }\n      for(const key of ['rfDir','peneOffset']) {\n        if(transient[key])ball[key].copy(transient[key]);\n      }\n    }\n    const sim=new Simulator('trial',world,null);\n    sim._syncList.ballRadius=world.balls[0].radius;\n    sim._sceneId=snapshot.sceneId || 'tigerClubSno';\n    sim._spotY=sim.ground.centerPosition.y+sim.ballRadius;\n    if(options.scenarioBalls)for(const b of options.scenarioBalls){\n      const ball=world.balls[b.i];\n      if(b.active!==false)sim.respotIndexXYZ(b.i,b.x,b.y,b.z);\n      else ball.active=false;\n    }\n    if (options.cuePosition != null) {\n      const position=options.cuePosition;\n      if (!['x','y','z'].every(key=>Number.isFinite(position[key]))) throw new Error('Invalid trial cue position');\n      sim.respotIndexXYZ(0,position.x,position.y,position.z);\n    }\n    const before=centres(world), rules={...snapshot.rules},custom=rules.ballOn===65535;\n    // A banked colour shot must declare its target before physics, rather than\n    // trying to infer a colour from the initial ray toward a cushion.\n    if (options.nominatedColour != null) {\n      const colour=options.nominatedColour;\n      if(rules.ballOn!==252 || !Number.isInteger(colour) || colour<2 || colour>7 ||\n        (rules.nominatedColour && rules.nominatedColour!==colour) ||\n        !before.some(b=>b.active && b.n===colour)) throw new Error('Invalid trial colour nomination');\n      rules.nominatedColour=colour;rules.nominationSource='manual';\n    }\n    const reviewReasons=[];\n    let touching=PCOLCore.touchingStatus({balls:before,...rules});\n    if(!custom) {\n      if(rules.freeBallReview)reviewReasons.push('Free-ball decision requires review.');\n      if(rules.freeBallAvailable && rules.freeBallNominee==null && !rules.freeBallDeclined)reviewReasons.push('Nominate or decline the available free ball.');\n      if(touching.requiresColourDeclaration && rules.nominationSource!=='manual')reviewReasons.push('Touching colour requires manual nomination.');\n      if(rules.ballOn===252 && !rules.nominatedColour && !touching.requiresColourDeclaration) {\n        const inferred=PCOLCore.inferColour(before,{x:stroke[3],z:stroke[5]});\n        if(inferred.colour) {\n          rules.nominatedColour=inferred.colour;rules.nominationSource='auto';\n          touching=PCOLCore.touchingStatus({balls:before,...rules});\n        } else reviewReasons.push('Colour nomination is ambiguous.');\n      }\n    }\n    const watches=new Map(touching.indices.map(i=>[i,{initial:true}]));\n    const trace=PCOLShotTrace.create(world.balls,{cap:15000,seconds:true}), contacts=[], pushedTouching=[];\n    let overflow=false,recording=false,steps=0,simulatedSeconds=0,cueStrikes=0;\n    function sample() {\n      const row=trace.sample(world.balls,simulatedSeconds);\n      if(!row){overflow=true;return null;}\n      const cue=world.balls[0],q=cue.position;\n      for(const [i,watch] of watches) {\n        const b=world.balls[i],p=b.position;\n        if(watch.initial && (!b.active || Math.hypot(q.x-p.x,q.y-p.y,q.z-p.z)>cue.radius+b.radius+PCOLCore.TOUCH_EPS*2)) watch.initial=false;\n      }\n      return row;\n    }\n    function record(contact,vix,viy,viz,vjx,vjy,vjz,closeSpeed) {\n      if (!(closeSpeed < -1e-6)) return;\n      const q=contact.bi.number===0?contact.bi:contact.isSS && contact.bj.number===0?contact.bj:null;\n      if (!contact.isSS) {\n        const normal=contact.normal || contact.bj.normal;\n        if(!q || contact.bj.end || contact.bj.tunnel || !normal || Math.abs(normal.y)>=.7)return;\n        if(!((q.v.x-vix)*normal.x+(q.v.y-viy)*normal.y+(q.v.z-viz)*normal.z>1e-7))return;\n        const row=sample();if(!row)return;\n        contacts.push({t:row.t,kind:'cushion',evolution:world.evolution,x:row.x,y:row.y,z:row.z});\n        for(const watch of watches.values())watch.initial=false;\n        return;\n      }\n      if(!q) {\n        if(!watches.size)return;\n        const bi=contact.bi,bj=contact.bj;\n        if(Math.hypot(bi.v.x-vix,bi.v.y-viy,bi.v.z-viz)>1e-7) {\n          const watch=watches.get(bi.index);if(watch)watch.initial=false;\n        }\n        if(Math.hypot(bj.v.x-vjx,bj.v.y-vjy,bj.v.z-vjz)>1e-7) {\n          const watch=watches.get(bj.index);if(watch)watch.initial=false;\n        }\n        return;\n      }\n      const cueIsI=q===contact.bi,obj=cueIsI?contact.bj:contact.bi;\n      const vx=cueIsI?vjx:vix,vy=cueIsI?vjy:viy,vz=cueIsI?vjz:viz;\n      const dx=obj.position.x-q.position.x,dy=obj.position.y-q.position.y,dz=obj.position.z-q.position.z;\n      const distance=Math.hypot(dx,dy,dz);\n      if(!distance || !(((obj.v.x-vx)*dx+(obj.v.y-vy)*dy+(obj.v.z-vz)*dz)/distance>1e-7))return;\n      const row=sample();if(!row)return;\n      const initialPush=watches.get(obj.index)?.initial;\n      if(initialPush && !pushedTouching.includes(obj.index))pushedTouching.push(obj.index);\n      const target=rules.ballOn===252 && rules.nominatedColour?2**rules.nominatedColour:rules.ballOn;\n      const allowed=touching.deemedHit || obj.index===rules.freeBallNominee || PCOLCore.ballOnNumbers(target).includes(obj.number);\n      const firstLegal=!contacts.some(c=>c.ballIndex!=null && c.legal===false);\n      contacts.push({t:row.t,ballIndex:obj.index,evolution:world.evolution,x:row.x,y:row.y,z:row.z,legal:allowed && firstLegal});\n      if(!initialPush)for(const watch of watches.values())watch.initial=false;\n    }\n    const solve=world.solver.solveContact;\n    world.solver.solveContact=function(contact) {\n      if(contact===world.tipContact&&contact.getCloseSpeed() < -1e-6)cueStrikes++;\n      const capture=recording && (contact.isSS || contact.bi.number===0);\n      // These pre-solve values are used only by this synchronous call. Scalars\n      // avoid temporary vector objects without sharing mutable contact state.\n      let vix,viy,viz,vjx,vjy,vjz;\n      if(capture) {\n        vix=contact.bi.v.x;viy=contact.bi.v.y;viz=contact.bi.v.z;\n        if(contact.isSS){vjx=contact.bj.v.x;vjy=contact.bj.v.y;vjz=contact.bj.v.z;}\n      }\n      const speed=capture?contact.getCloseSpeed():0;\n      const result=solve.call(this,contact);\n      if(capture)record(contact,vix,viy,viz,vjx,vjy,vjz,speed);\n      return result;\n    };\n    const internal=world.internalStep;\n    world.internalStep=function(){const result=internal.call(this);sample();return result;};\n    sim.stroke(Array.from(stroke));\n    recording=true;\n    const cue=world.balls[0];\n    for(const [i,watch] of watches) {\n      const obj=world.balls[i],dx=obj.position.x-cue.position.x,dy=obj.position.y-cue.position.y,dz=obj.position.z-cue.position.z;\n      const distance=Math.hypot(dx,dy,dz);\n      if(distance && (cue.v.x*dx+cue.v.y*dy+cue.v.z*dz)/distance < -1e-6)watch.initial=false;\n    }\n    sample();\n    const maxSteps=Number.isFinite(options.maxSteps)?Math.max(1,Math.min(100000,Math.floor(options.maxSteps))):12000;\n    const maxWallMs=Number.isFinite(options.maxWallMs)?Math.max(1,Math.min(60000,options.maxWallMs)):5000;\n    let reason=null;\n    do {\n      if(clock()-started>=maxWallMs){reason='wall-time limit';break;}\n      simulatedSeconds+=sim.step(setup.stepSize);steps++;\n      if(overflow){reason='trajectory limit';break;}\n      if(!world.balls.some(b=>b.active && !b.asleep))break;\n      if(steps>=maxSteps){reason='step limit';break;}\n    } while(true);\n    const balls=centres(world),status=reason?'incomplete':'complete';\n    const first=contacts.find(c=>c.ballIndex!=null);\n    const firstHits=first?[...new Set(contacts.filter(c=>c.ballIndex!=null && c.evolution===first.evolution && Math.hypot(c.x-first.x,c.y-first.y,c.z-first.z)<1e-5).map(c=>c.ballIndex))]:[];\n    const jump=PCOLCore.evaluateJump(trace,before,contacts,sim.ballRadius);\n    if(reason) {jump.indeterminate=true;jump.reason=reason;}\n    const potted=[...sim.result.pottedIndices],outOfBounds=[...sim.result.outOfBoundsIndices];\n    if(!custom && jump.indeterminate)reviewReasons.push('Jump assessment requires review.');\n    const adjudication=!custom && status==='complete' && !reviewReasons.length?PCOLCore.adjudicate({...rules,balls,firstHits,potted,outOfBounds,jumpFoul:jump.foul,touchingAtStart:touching.indices,pushedTouching,cueStrikes}):null;\n    const afterScores=(rules.scores||[]).map((score,index)=>score+(adjudication?.score>0 && index===rules.playerIndex?adjudication.score:adjudication?.score<0 && index!==rules.playerIndex?-adjudication.score:0));\n    const blackFrame=adjudication?PCOLCore.blackFrameOutcome({ballOn:rules.ballOn,balls:before,score:adjudication.score,scores:afterScores,respottedBlack:rules.respottedBlack}):null;\n    if(blackFrame){adjudication.frameOutcome=blackFrame;adjudication.continueBreak=false;}\n    const result={status,steps,simulatedSeconds,elapsedMs:clock()-started,balls,potted,outOfBounds,firstHits,contacts,stroke:Array.from(stroke),adjudication,jump};\n    if(reviewReasons.length)result.reviewReasons=reviewReasons;\n    if(status==='complete' && (custom || adjudication)) {\n      const Ref=req(54),ref=new Ref();\n      ref.syncAreaWithSimulator(sim);\n      preservePinkRespot(ref);\n      if(custom) {\n        if(!world.balls[0].active)ref._liveRespotCueBall(sim);\n      } else {\n        ref._liveRespot(adjudication.respots,[],sim);\n        if(adjudication.requiresInHand)ref._liveRespotCueBall(sim);\n        if(blackFrame==='respot'){\n          ref._liveRespotCueBall(sim);\n          sim.respotIndexDefault(world.balls.find(b=>b.number===7).index);\n        }\n      }\n      result.nextBalls=centres(world);\n      result.nextContext={ballOn:custom?65535:adjudication.nextBallOn,inHand:custom?1:adjudication.requiresInHand?2:0};\n      if(blackFrame==='respot')Object.assign(result.nextContext,{ballOn:128,inHand:2,respottedBlack:true,requiresDraw:true});\n      if(blackFrame==='end')Object.assign(result.nextContext,{ballOn:0,inHand:0});\n      // Only adjudicated legal continuations have an automatic next player/state.\n      // Fouls, cue placement and a drawn black decider require human decisions.\n      if(!custom && !adjudication.foulCode && !adjudication.requiresInHand && !result.nextContext.requiresDraw) {\n        const nextRules={...rules,...result.nextContext,scores:afterScores,\n          nRounds:(rules.nRounds || 0)+1,\n          playerIndex:adjudication.continueBreak?rules.playerIndex:(rules.playerIndex+1)%Math.max(1,afterScores.length),\n          nominatedColour:null,nominationSource:null,freeBallNominee:null,\n          freeBallAvailable:false,freeBallReview:false,freeBallDeclined:false,\n          respottedBlack:blackFrame==='end'?false:!!rules.respottedBlack};\n        result.nextSnapshot={sceneId:snapshot.sceneId,serial:world.serialize({balls:[]}),rules:nextRules,\n          balls:snapshot.balls.map(source=>{\n            const b=world.balls[source.i];\n            return {...source,active:b.active,x:b.position.x,y:b.position.y,z:b.position.z,spot:{...source.spot},transient:{rfPower:b.rfPower,\n              rfDir:{x:b.rfDir.x,y:b.rfDir.y,z:b.rfDir.z},penetration:b.penetration,\n              peneOffset:{x:b.peneOffset.x,y:b.peneOffset.y,z:b.peneOffset.z},collisionMask:b.collisionMask}};\n          })};\n      }\n    }\n    if(reason)result.reason=reason;\n    if(options.trace)result.trace=options.trace==='cue'?trace.toCueArray():trace.toArray();\n    return result;\n  }\n  self.onmessage = event => {\n    const message=event.data;\n    try {\n      let result;\n      if(message.type==='init') {\n        if(!message.modules || !message.geometry || !message.geometry.data || !(message.stepSize>0) || !Number.isFinite(message.stepSize) || !Number.isInteger(message.maxIter) || message.maxIter<1 || message.maxIter>100)throw new Error('Invalid worker initialization');\n        setup={req:requireModules(message.modules),geometry:message.geometry,stepSize:message.stepSize,maxIter:message.maxIter};\n        result={ready:true};\n      } else if(message.type==='simulate') result=simulate(message);\n      else throw new Error('Unknown worker request');\n      self.postMessage({id:message.id,result});\n    } catch(error) {self.postMessage({id:message && message.id,error:String(error && error.message || error)});}\n  };\n}\n\nPCOLTrialWorker();";
 
 /* A lazy worker client. Only copied values cross the boundary into physics. */
 const PCOLTrial = (() => {
@@ -2453,13 +2521,13 @@ const PCOLTurnManager = (() => {
   return {create};
 })();
 
-/* Local search shares one deadline; every deeper estimate replaces its leaf. */
+/* Local search shares one work budget; deliberate UI yields have a separate wall limit. */
 const PCOLSearch=(()=>{
   const limit=(v,d,a,b)=>Number.isFinite(v)?Math.max(a,Math.min(b,v)):d;
   const key=s=>[s.nominatedColour||0,Math.atan2(s.shot.direction.z,s.shot.direction.x),s.shot.power,s.shot.vertical||0,s.shot.side||0,s.shot.elevation||0].map(x=>Math.round(x*100000)).join(':');
   function create({getTrial,getState,geometry,policy,skill,continuation,development,brain}) {
     let active=null,lastResult=null;
-    const stop=reason=>{if(active){active.reason=reason;if(active.inFlight)active.trial.cancel();}};
+    const stop=reason=>{if(active){active.reason=reason;active.resume?.();if(active.inFlight)active.trial.cancel();}};
     function preparePlan(previous,context={}) {
       const snapshot=getTrial().snapshot(),state=getState(snapshot),brief=brain.analyze(state,geometry),actor=state.rules.playerIndex;
       const planCompliance=brain.compliance(state,previous?.expectedNext,geometry),last=context.lastOutcome;
@@ -2488,12 +2556,33 @@ const PCOLSearch=(()=>{
       if(rules.freeBallReview||(rules.freeBallAvailable&&rules.freeBallNominee==null&&!rules.freeBallDeclined))reviewReasons.push('Resolve the free-ball choice first');
       if(state.touching?.requiresColourDeclaration&&rules.nominationSource!=='manual')reviewReasons.push('Declare the touching colour first');
       if(reviewReasons.length)return {status:'needs-ruling',reviewReasons,candidates:[],elapsedMs:performance.now()-started};
-      const budgetMs=limit(options.budgetMs,45000,100,90000),deadline=started+budgetMs;
+      const budgetMs=limit(options.budgetMs,45000,100,90000);let deadline=started+budgetMs;
       const maxCandidates=Math.floor(limit(options.maxCandidates,96,1,288)),maxResults=Math.floor(limit(options.maxResults,4,1,4));
       const samples=Math.floor(limit(options.riskSamples,2,0,6)),branchCap=Math.floor(limit(options.continuationTrials,6,0,12));
       const riskCap=samples*8;
       const job=active={trial,inFlight:false,reason:null,phase:'routes'};
-      const timer=setTimeout(()=>stop('budget-exhausted'),Math.max(0,deadline-performance.now()));
+      const cooperative=options.cooperativeYield!==false,settings=options.cooperativeYield||{};
+      const sliceMs=limit(settings.sliceMs,6,0,16),delayMs=limit(settings.delayMs,4,0,16);
+      const wallLimitMs=budgetMs+Math.min(15000,500+budgetMs*.25);
+      let timer,waitMs=0,yields=0,sliceStarted=performance.now();
+      const armDeadline=()=>{clearTimeout(timer);timer=setTimeout(()=>stop('budget-exhausted'),Math.max(0,deadline-performance.now()));};
+      const wallTimer=setTimeout(()=>stop('budget-exhausted'),Math.max(0,started+wallLimitMs-performance.now()));
+      armDeadline();
+      // Yield a real task boundary, not another microtask. Natural Worker waits do
+      // not fill this main-thread slice; our deliberate pauses do not spend search budget.
+      async function cooperate() {
+        if(job.reason)return false;
+        if(!cooperative||performance.now()-sliceStarted<sliceMs)return true;
+        const paused=performance.now();clearTimeout(timer);yields++;
+        await new Promise(resolve=>{
+          const timeout=setTimeout(resume,delayMs);
+          function resume(){clearTimeout(timeout);job.resume=null;resolve();}
+          job.resume=resume;
+        });
+        const waited=performance.now()-paused;waitMs+=waited;deadline+=waited;sliceStarted=performance.now();
+        if(!job.reason)armDeadline();
+        return !job.reason;
+      }
       const accepted=[],cache=new Map(),outcomes=new Map(),evaluations=new Map(),sampled=new Map(),durations=[],stages=[];
       const counts={generated:0,tried:0,completed:0,incomplete:0,rejected:0,reused:0,recovery:0,refined:0,development:0,riskTrials:0,boundaryTrials:0,branchTrials:0,reasons:{ruling:0,foul:0,miss:0}};
       const current=()=>{try{return liveFingerprint!==undefined?trial.fingerprint()===liveFingerprint:JSON.stringify(trial.snapshot())===fingerprint;}catch(_){return false;}};
@@ -2546,11 +2635,13 @@ const PCOLSearch=(()=>{
         ((f.result?.firstHits?.length===0)||(c.kind==='attack'&&!(f.result?.score>0))));
       async function simulate(shot,nomination,parent=null) {
         if(!available())return null;
+        if(!await cooperate()||!available())return null;
         if(!current()){job.reason='stale';return null;}
         job.inFlight=true;const t=performance.now();
         try {
           const opts={nominatedColour:nomination,maxWallMs:Math.min(5000,Math.max(1,deadline-performance.now())),trace:brain?'cue':false};
-          const r=await(parent?trial.simulateFrom(parent,shot,opts):trial.simulate(shot,opts));
+          const pending=parent?trial.simulateFrom(parent,shot,opts):trial.simulate(shot,opts),waiting=performance.now();
+          let r;try{r=await pending;}finally{sliceStarted+=performance.now()-waiting;}
           if(r.stale||r.snapshot&&!checkedRoots.has(r.snapshot)&&JSON.stringify(r.snapshot)!==fingerprint){job.reason='stale';return null;}
           if(r.snapshot)checkedRoots.add(r.snapshot);
           return r;
@@ -2559,7 +2650,7 @@ const PCOLSearch=(()=>{
       }
       async function stage(name,work) {
         job.phase=name;const t=performance.now(),n=durations.length,r=counts.rejected;
-        await work();stages.push({name,elapsedMs:Math.round(performance.now()-t),trials:durations.length-n,rejected:counts.rejected-r});
+        await work();await cooperate();stages.push({name,elapsedMs:Math.round(performance.now()-t),trials:durations.length-n,rejected:counts.rejected-r});
       }
       async function explore(seeds,cap,reserve=0,stopAfterLegal=false) {
         counts.generated+=seeds.length;let used=0;
@@ -2853,7 +2944,8 @@ const PCOLSearch=(()=>{
           expectedNext:chosen?.expectedNext,lastWasDevelopment:chosen?.effect==='development'||chosen?.intent?.task==='develop',
           coverageInsufficient:!chosen||(!intentWorks(chosen)&&!(chosen.outcome?.score>0&&chosen.outcome?.continueBreak&&chosen.expectedNext?.intent)),
           selectedIntent:chosen?.intent};
-        lastResult={status,budgetMs,elapsedMs:performance.now()-started,counts,stages,tactical:policy?.analyze(state),selected:chosen,
+        const elapsedMs=performance.now()-started;
+        lastResult={status,budgetMs,elapsedMs,scheduling:{enabled:cooperative,yields,waitMs,budgetElapsedMs:elapsedMs-waitMs,wallLimitMs},counts,stages,tactical:policy?.analyze(state),selected:chosen,
           activePlan,searchIntent,categoryBest,planCompliance:chosen?.evidence.nominal.planCompliance,
           position:{evolution:before.serial?.evolution,round:rules.nRounds,playerIndex:rules.playerIndex},
           riskCoverage:comparable.map(c=>({id:c.id,samples:c.risk.samples,coverage:c.risk.coverage})),
@@ -2865,7 +2957,7 @@ const PCOLSearch=(()=>{
           outcomes:[...outcomes].map(([id,result])=>({id,result})),status,counts,stages
         }));
         return lastResult;
-      }finally{clearTimeout(timer);active=null;}
+      }finally{clearTimeout(timer);clearTimeout(wallTimer);active=null;}
     }
     return {run,preparePlan,cancel:()=>stop('cancelled'),getStatus:()=>({busy:!!active,phase:active?.phase,lastResult:lastResult&&{status:lastResult.status,elapsedMs:lastResult.elapsedMs,count:lastResult.candidates.length,counts:lastResult.counts}})};
   }
@@ -2943,7 +3035,7 @@ const PCOLLocalAI = (() => {
         const feedback=failureEvidence(getTrial().snapshot());
         search=await cancellable(job.search.run({...localOptions,fastPlan:continued,preparedRoot:preparation.preparedRoot,failureEvidence:feedback,
           budgetMs:Math.max(1,Math.min(Number(options.budgetMs)||65000,65000,job.deadline-Date.now()-500)),plan}),job.controller.signal);
-        emit('search.complete',{status:search.status,elapsedMs:search.elapsedMs,totalElapsedMs:Date.now()-started,budgetMs:search.budgetMs,counts:search.counts,stages:search.stages||search.counts,position:search.position,activePlan:search.activePlan,searchIntent:search.searchIntent,planCompliance:search.planCompliance,categoryBest:search.categoryBest,candidates:compact(search.candidates||[])});
+        emit('search.complete',{status:search.status,elapsedMs:search.elapsedMs,totalElapsedMs:Date.now()-started,budgetMs:search.budgetMs,scheduling:search.scheduling,counts:search.counts,stages:search.stages||search.counts,position:search.position,activePlan:search.activePlan,searchIntent:search.searchIntent,planCompliance:search.planCompliance,categoryBest:search.categoryBest,candidates:compact(search.candidates||[])});
         guard(job,before);
         if(['stale','cancelled','needs-ruling'].includes(search.status))throw failure(search.status,'AI search '+search.status);
         if(!search.candidates?.length)throw failure('no-candidates','No legal AI candidates available');
@@ -2952,7 +3044,7 @@ const PCOLLocalAI = (() => {
           objective:search.tactical?.objective,expectedNext:candidate.expectedNext||null,lastWasDevelopment:candidate.intent?.task==='develop',
           coverageInsufficient:search.planCompliance?.coverageInsufficient===true}:null);
         const result={candidate,reason,source,shortlist:compact(search.candidates),activePlan,
-          search:{status:search.status,elapsedMs:search.elapsedMs,counts:search.counts,stages:search.stages,searchIntent:search.searchIntent,planCompliance:search.planCompliance,categoryBest:search.categoryBest}};
+          search:{status:search.status,elapsedMs:search.elapsedMs,scheduling:search.scheduling,counts:search.counts,stages:search.stages,searchIntent:search.searchIntent,planCompliance:search.planCompliance,categoryBest:search.categoryBest}};
         emit('selection.complete',{kind:'shot',id:candidate.id,source,reason,score:candidate.score,
           elapsedMs:planningElapsedMs,totalElapsedMs:Date.now()-started});
         update({phase:'ready',lastDecision:{candidateId:result.candidate.id,source:result.source,reason:result.reason}});return result;
@@ -3122,7 +3214,8 @@ const PCOLMatchRecorder = (() => {
         waiting.onsuccess=()=>{pending=waiting.result;if(saved!==undefined)done({saved,pending});};}),
       pending:limit=>transaction('readonly',(events,done)=>{const rows=[],request=events.index('synced').openCursor(0);request.onsuccess=()=>{
         const cursor=request.result;if(!cursor||rows.length>=limit)return done(rows);rows.push(cursor.value);cursor.continue();};}),
-      acknowledge:key=>transaction('readwrite',(events)=>{const request=events.get(key);request.onsuccess=()=>{if(request.result)events.put({...request.result,synced:1});};}),
+      acknowledge:keys=>transaction('readwrite',(events)=>{for(const key of Array.isArray(keys)?keys:[keys]){
+        const request=events.get(key);request.onsuccess=()=>{if(request.result)events.put({...request.result,synced:1});};}}),
       readPage:({after=0,limit=200}={})=>transaction('readonly',(events,done)=>{
         const rows=[],size=Math.max(1,Math.min(500,Number(limit)||200)),request=events.openCursor(IDBKeyRange.lowerBound(Number(after)||0,true));
         request.onsuccess=()=>{const cursor=request.result;
@@ -3131,18 +3224,31 @@ const PCOLMatchRecorder = (() => {
       })
     };
   }
-  function create({version='',source='browser',onChange=()=>{},fetchImpl=localFetch,store=createStore()}={}) {
+  function create({version='',source='browser',onChange=()=>{},isBusy=()=>false,fetchImpl=localFetch,store=createStore()}={}) {
     let enabled=true,frameId=null,sequence=0,lastStroke=null,disposed=false,writing=null,syncing=null,error=null,syncError=null,saved=0,pending=0,failed=0;
-    let queuedBytes=0,retryTimer=null,retryAt=0,retryDelay=5000;
+    let queuedBytes=0,retryTimer=null,retryAt=0,retryDelay=5000,notifyTimer=null,lastNotice=null,lastNoticeAt=0;
+    const SYNC_BATCH=8,SYNC_INTERVAL=1500,NOTICE_INTERVAL=250;
     const writes=[],session=Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,10);
     const getStatus=()=>({enabled,frameId,session,saved,localSaved:saved,pending,saving:writes.length,failed,error,syncError,status:error?'error':writes.length?'saving':'saved'});
-    const notify=()=>{try {onChange(getStatus());}catch(_) {}};
+    function sendNotice() {
+      notifyTimer=null;if(disposed)return;
+      const status=getStatus();
+      if(lastNotice&&Object.keys(status).every(key=>status[key]===lastNotice[key]))return;
+      lastNotice=status;lastNoticeAt=Date.now();try {onChange(status);}catch(_) {}
+    }
+    function notify(immediate=false) {
+      if(disposed)return;
+      if(immediate||!lastNotice||error!==lastNotice.error||syncError!==lastNotice.syncError||enabled!==lastNotice.enabled){
+        if(notifyTimer)clearTimeout(notifyTimer);sendNotice();return;
+      }
+      if(!notifyTimer){notifyTimer=setTimeout(sendNotice,Math.max(0,NOTICE_INTERVAL-(Date.now()-lastNoticeAt)));notifyTimer.unref?.();}
+    }
     const entryFor=(kind,data,correlation={})=>({schema:1,id:session+'_'+(++sequence),session,seq:sequence,source,frameId,at:new Date().toISOString(),kind,data,
       ...Object.fromEntries(['turnId','decisionId','requestId','strokeId'].filter(key=>correlation[key]!=null).map(key=>[key,String(correlation[key])]))});
     const ready=store.stats().then(stats=>{saved=stats.saved;pending=stats.pending;notify();scheduleSync();return getStatus();},()=>{error='storage_unavailable';notify();return getStatus();});
     function scheduleSync() {
-      if(disposed||!pending||retryTimer)return;
-      retryTimer=setTimeout(()=>{retryTimer=null;void sync(false);},Math.max(0,retryAt-Date.now()));
+      if(disposed||!enabled||!pending||retryTimer||syncing)return;
+      retryTimer=setTimeout(()=>{retryTimer=null;if(isBusy()){scheduleSync();return;}void sync(false);},Math.max(SYNC_INTERVAL,retryAt-Date.now()));
       retryTimer.unref?.();
     }
     function persist() {
@@ -3159,18 +3265,27 @@ const PCOLMatchRecorder = (() => {
       return writing;
     }
     function sync(force=false) {
-      if(syncing||disposed||(!force&&Date.now()<retryAt))return syncing||Promise.resolve(getStatus());
+      if(syncing||disposed||(!force&&(!enabled||isBusy()||Date.now()<retryAt)))return syncing||Promise.resolve(getStatus());
       if(retryTimer){clearTimeout(retryTimer);retryTimer=null;}
       syncing=(async()=>{
         await ready;
         try{
           while(!disposed){
-            const batch=await store.pending(40);if(!batch.length)break;
-            for(const row of batch){
-              const response=await fetchImpl('http://127.0.0.1:18763/record',{method:'POST',headers:{'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'},body:row.raw});
-              if(!response.ok){let code='record_failed';try{const body=await response.json();if(ERROR_CODES.has(body.error))code=body.error;}catch(_){}throw new Error(code);}
-              await store.acknowledge(row.key);pending=Math.max(0,pending-1);syncError=null;retryAt=0;retryDelay=5000;notify();
+            const batch=await store.pending(SYNC_BATCH);if(!batch.length)break;
+            const accepted=[];
+            try{
+              for(const row of batch){
+                if(disposed||(!force&&(!enabled||isBusy())))break;
+                const response=await fetchImpl('http://127.0.0.1:18763/record',{method:'POST',headers:{'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'},body:row.raw});
+                if(!response.ok){let code='record_failed';try{const body=await response.json();if(ERROR_CODES.has(body.error))code=body.error;}catch(_){}throw new Error(code);}
+                accepted.push(row.key);
+              }
+            }finally{
+              // A failed upload leaves only its unsent suffix pending. A failed acknowledgement
+              // safely retries uploaded IDs; the recording server deduplicates those IDs.
+              if(accepted.length){await store.acknowledge(accepted);pending=Math.max(0,pending-accepted.length);syncError=null;retryAt=0;retryDelay=5000;}
             }
+            if(!force)break;
           }
           const stats=await store.stats();saved=stats.saved;pending=stats.pending;
         }catch(failure){syncError=ERROR_CODES.has(failure.message)?failure.message:failure.message==='timeout'?'timeout':'unavailable';retryAt=Date.now()+retryDelay;retryDelay=Math.min(60000,retryDelay*2);}
@@ -3200,9 +3315,9 @@ const PCOLMatchRecorder = (() => {
     }
     return {startFrame(meta={}){frameId=session+'_'+(++sequence);lastStroke=null;event('frame.start',{version,...meta});return frameId;},
       event,endFrame(summary={}){return event('frame.end',summary);},mark(label,extra={}){return event('mark',{label,strokeId:lastStroke,...extra},{strokeId:lastStroke});},
-      context:()=>({frameId,session,enabled}),setEnabled(value){enabled=!!value;notify();},getStatus,ready,readPage,exportJSONL,download,
-      async flush(){await persist();return sync(true);},
-      dispose(){disposed=true;if(retryTimer)clearTimeout(retryTimer);return persist();}};
+      context:()=>({frameId,session,enabled}),setEnabled(value){enabled=!!value;notify(true);if(!enabled&&retryTimer){clearTimeout(retryTimer);retryTimer=null;}else scheduleSync();},getStatus,ready,readPage,exportJSONL,download,
+      async flush(){await persist();if(syncing)await syncing;return sync(true);},
+      dispose(){disposed=true;if(retryTimer){clearTimeout(retryTimer);retryTimer=null;}if(notifyTimer){clearTimeout(notifyTimer);notifyTimer=null;}return persist();}};
   }
   return {create,createStore};
 })();
@@ -3455,9 +3570,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.15.0";
+  const VERSION = "0.15.1";
   const DEVELOPMENT = true;
-  const BUILD_ID = "5c1072db3a36";
+  const BUILD_ID = "5bef9c09216c";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -3465,12 +3580,20 @@ const PCOLArena = (() => {
   let active = null;
   const clone = x => JSON.parse(JSON.stringify(x));
   const description = code => FOULS.filter(([bit]) => code & bit).map(([, text]) => text).join('；');
-  function wrap(object, key, make) {
+  function wrap(object, key, make, scope = patches) {
     const own = Object.prototype.hasOwnProperty.call(object, key);
     const original = object[key];
     const replacement = make(original);
     object[key] = replacement;
-    patches.push(() => { if (object[key] === replacement) { if (own) object[key] = original; else delete object[key]; } });
+    scope.push(() => { if (object[key] === replacement) { if (own) object[key] = original; else delete object[key]; } });
+  }
+  function clearSceneHooks(s) {
+    for (const undo of s.scenePatches.splice(0).reverse()) undo();
+    s.aiHooks=new WeakSet();s.refHooks=new WeakSet();s.deliveryHooks=new WeakSet();
+  }
+  function releaseStrokeHistory(s) {
+    s.shot=null;s.lastTrace=[];s.lastContacts=[];s.lastBefore=null;s.lastResult=null;
+    s.practiceBefore=null;s.activeVisitPlan=null;s.preparedShot=null;
   }
   function balls(g) {
     return g._simulator.getBalls().map(b => ({ i: b.index, n: b.number, active: b.active, x: b.position.x, y: b.position.y, z: b.position.z, r: b.radius }));
@@ -3548,7 +3671,7 @@ const PCOLArena = (() => {
         if(x===null)throw new Error('No legal pink-ball respot position');
         sim.resetBallXYZ(b,x,b.spot.y,b.spot.z);
       }
-    });
+    },s.scenePatches);
   }
   function scores(m) { return m._players.map((p, i, ps) => p.pts - (ps.length > 1 ? ps[(i + 1) % ps.length].penalty : 0)); }
   function actor(s) { return s.hotseat ? `玩家 ${s.g._model._gContext.playerIndex + 1}` : '你'; }
@@ -3701,6 +3824,14 @@ const PCOLArena = (() => {
     if(s.renderFrame!=null)return;
     s.renderFrame=window.requestAnimationFrame(()=>{s.renderFrame=null;if(s.host?.isConnected)render(s);});
   }
+  function renderRecording(s) {
+    if(!s.host?.isConnected)return;
+    const r=s.recorder?.getStatus(),button=s.shadow.querySelector('.recording');
+    const label='记录 · '+(!r?.enabled?'已暂停':r.error?'保存失败':r.saving?'保存中':'本机已保存');
+    const title=r?`本机累计已保存 ${r.localSaved}，待同步 ${r.pending}，正在保存 ${r.saving}`:'';
+    if(button.textContent!==label)button.textContent=label;
+    if(button.title!==title)button.title=title;
+  }
   function render(s) {
     if (!s.host) mount(s);
     const live = s.app._currentController === s.g && s.g._model._gState !== 1;
@@ -3728,9 +3859,7 @@ const PCOLArena = (() => {
     const phase=opponent?.error||aiStatus?.turn.failed?'已暂停':aiStatus?.turn.busy?'选择回合方案':opponent?.busy?'正在试打':'设置';
     aiButton.textContent=home?'与 AI 对局':'本地 AI · '+phase;
     aiButton.title=opponent?.error || '调整本地 AI 的击球准度与战术倾向';
-    if(DEVELOPMENT){const r=s.recorder?.getStatus();
-      s.shadow.querySelector('.recording').textContent='记录 · '+(!r?.enabled?'已暂停':r.error?'保存失败':r.saving?'保存中':'本机已保存');
-      s.shadow.querySelector('.recording').title=r?`本机累计已保存 ${r.localSaved}，待同步 ${r.pending}，正在保存 ${r.saving}`:'';
+    if(DEVELOPMENT){renderRecording(s);
       s.shadow.querySelector('.mark').disabled=!s.lastBefore;
       s.shadow.querySelector('.mark').hidden=home;
     }
@@ -4032,7 +4161,7 @@ const PCOLArena = (() => {
         opponentSnookered:handedOver&&!result.foulCode?snooker.snookered:false,selfSnookered:handedOver?false:snooker.snookered,
         firstHitBalls:(result.firstHits||[]).map(i=>({id:i,name:COLOURS[shot.before.balls.find(b=>b.i===i)?.n]}))};
       const id=recordEvent(s,'stroke.end',{actor,result:clone(result),facts,after,
-        planCompliance:s.activeVisitPlan?.actor===actor?s.assessPlan?.(s.activeVisitPlan.expectedNext):null,
+        planCompliance:s.activeVisitPlan?.actor===actor?s.assessPlan?.(s.activeVisitPlan.expectedNext,after):null,
         elapsedMs:shot.recordStarted?performance.now()-shot.recordStarted:null},{strokeId:shot.recordId});
       s.lastStrokeRecord={id,actor,turnId:s.currentTurnId,decisionId:s.currentDecisionId,controller:shot.recordController};
       const stats=s.frameStats.players[actor];stats.shots++;stats.points+=Math.max(0,result.score);
@@ -4057,25 +4186,24 @@ const PCOLArena = (() => {
   function sample(s) {
     const shot = s.shot;
     if (!shot?.physical || s.predicting) return null;
-    const bs = balls(s.g), q = bs[0], t = shot.trace.length;
-    if (t > 15000) { shot.overflow = true; return null; }
-    const row = { t, x: q.x, y: q.y, z: q.z, balls: bs };
+    const sim=s.g._simulator,bs=sim.getBalls(),q=bs[0],p=q.position;
+    const row=shot.trace.sample(bs);
+    if (!row) { shot.overflow = true; return null; }
     for (const [index,watch] of shot.touchWatches) {
       if (!watch.initial) continue;
-      const b=bs.find(b=>b.i===index);
-      if (!b?.active || Math.hypot(q.x-b.x,q.y-b.y,q.z-b.z)>q.r+b.r+PCOLCore.TOUCH_EPS*2) watch.initial=false;
+      const b=sim.getBallAtIndex(index);
+      if (!b?.active || Math.hypot(p.x-b.position.x,p.y-b.position.y,p.z-b.position.z)>q.radius+b.radius+PCOLCore.TOUCH_EPS*2) watch.initial=false;
     }
-    shot.trace.push(row); return row;
+    return row;
   }
-  function recordSolvedContact(s, contact, beforeVelocity, closeSpeed) {
+  function recordSolvedContact(s, contact, ix, iy, iz, jx, jy, jz, closeSpeed) {
     const shot=s.shot;
     if (!shot?.physical || s.predicting || !(closeSpeed < -1e-6)) return;
     const q=contact.bi.number===0?contact.bi:contact.isSS && contact.bj.number===0?contact.bj:null;
     if (!contact.isSS) {
       const normal=contact.normal || contact.bj.normal;
       if (!q || contact.bj.end || contact.bj.tunnel || !normal || Math.abs(normal.y)>=.7) return;
-      const v=beforeVelocity.i;
-      const gained=(q.v.x-v.x)*normal.x+(q.v.y-v.y)*normal.y+(q.v.z-v.z)*normal.z;
+      const gained=(q.v.x-ix)*normal.x+(q.v.y-iy)*normal.y+(q.v.z-iz)*normal.z;
       if (!(gained>1e-7)) return;
       const row=sample(s); if (!row) return;
       shot.contacts.push({t:row.t,kind:'cushion',evolution:s.g._simulator._world.evolution,x:row.x,y:row.y,z:row.z});
@@ -4085,17 +4213,15 @@ const PCOLArena = (() => {
     if (!q) {
       // A later ball can move the originally touching object without making
       // the initial play-away a push stroke. Track the source of the motion.
-      for (const [b,v] of [[contact.bi,beforeVelocity.i],[contact.bj,beforeVelocity.j]]) {
-        if (Math.hypot(b.v.x-v.x,b.v.y-v.y,b.v.z-v.z)>1e-7) {
-          const watch=shot.touchWatches.get(b.index); if (watch) watch.initial=false;
-        }
-      }
+      const i=contact.bi,j=contact.bj;
+      if(Math.hypot(i.v.x-ix,i.v.y-iy,i.v.z-iz)>1e-7){const watch=shot.touchWatches.get(i.index);if(watch)watch.initial=false;}
+      if(Math.hypot(j.v.x-jx,j.v.y-jy,j.v.z-jz)>1e-7){const watch=shot.touchWatches.get(j.index);if(watch)watch.initial=false;}
       return;
     }
-    const obj=q===contact.bi?contact.bj:contact.bi, v=q===contact.bi?beforeVelocity.j:beforeVelocity.i;
-    const direction={x:obj.position.x-q.position.x,y:obj.position.y-q.position.y,z:obj.position.z-q.position.z};
-    const length=Math.hypot(direction.x,direction.y,direction.z);
-    const gained=length?((obj.v.x-v.x)*direction.x+(obj.v.y-v.y)*direction.y+(obj.v.z-v.z)*direction.z)/length:0;
+    const cueIsI=q===contact.bi,obj=cueIsI?contact.bj:contact.bi;
+    const dx=obj.position.x-q.position.x,dy=obj.position.y-q.position.y,dz=obj.position.z-q.position.z;
+    const length=Math.hypot(dx,dy,dz);
+    const gained=length?((obj.v.x-(cueIsI?jx:ix))*dx+(obj.v.y-(cueIsI?jy:iy))*dy+(obj.v.z-(cueIsI?jz:iz))*dz)/length:0;
     if (!(gained>1e-7)) return;
     const row=sample(s); if (!row) return;
     const watch=shot.touchWatches.get(obj.index);
@@ -4132,7 +4258,7 @@ const PCOLArena = (() => {
       const changed=original.apply(this,args);
       if(changed)s.opponent?.reset();
       return changed;
-    });
+    },s.scenePatches);
     wrap(ai, 'step', original => function (...args) {
       if(s.opponent?.getStatus().enabled && s.ensureAITurn?.())return null;
       const result = s.getOpponent().step(this,original,args);
@@ -4144,15 +4270,15 @@ const PCOLArena = (() => {
           // side spin and launch the exact compiled vector used by the trial.
           wrap(ctl._stickCtl,'setTipPercent',original=>function(side,vertical){
             return original.call(this,s.opponent.getDelivery()?.shot.side??side,vertical);
-          });
+          },s.scenePatches);
           wrap(ctl,'getStrokeVars',original=>function(...args){
             return s.opponent.getDelivery()?.stroke.slice()||original.apply(this,args);
-          });
+          },s.scenePatches);
         }
       }
       if (result) s.aiTarget = Number.isInteger(result.ballBIndex) ? result.ballBIndex : null;
       return result;
-    });
+    },s.scenePatches);
     return ai;
   }
   function restartAI(s) {
@@ -4391,8 +4517,8 @@ const PCOLArena = (() => {
       }else{ctx.ballOn=0;ctx.inHand=0;s.blackDecider=null;}
     }
     recordCompletedStroke(s,shot,{...result,jump,firstHits});
-    if(blackFrame==='respot'){startBlackDecider(s);render(s);return m;}
-    if(result.score>=0&&awardEarlyFrame(s,offender,result.continueBreak)){render(s);return m;}
+    if(blackFrame==='respot'){startBlackDecider(s);requestRender(s);return m;}
+    if(result.score>=0&&awardEarlyFrame(s,offender,result.continueBreak)){requestRender(s);return m;}
     if (result.score < 0 && ctx.ballOn && m._players.length > 1) {
       const mask = oldMask === 252 && shot.before.nominatedColour ? 2 ** shot.before.nominatedColour : oldMask;
       const direct = PCOLCore.hasDirectHit(shot.before.balls, mask);
@@ -4411,7 +4537,7 @@ const PCOLArena = (() => {
       offerFoul(s);
       g._uiLayer?.closeMessage();
     } else { syncResponse(s, judgement); offerConcession(s, offender); }
-    render(s);
+    requestRender(s);
     return m;
   }
   function attach(app, require) {
@@ -4423,11 +4549,18 @@ const PCOLArena = (() => {
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, blackDecider: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
     s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;s.refHooks=new WeakSet();s.deliveryHooks=new WeakSet();
+    s.scenePatches=[];s.interactingUntil=0;
     hookColourRespots(s);
     API.app = app;
     let trial = null, search = null, localAI = null;
     s.aiSettings={skill:'strong',engine:'local'};s.requestedEnhanced=false;
-    s.recorder=DEVELOPMENT?PCOLMatchRecorder.create({version:VERSION,onChange:()=>{if(s.host)requestRender(s);}}):null;
+    // Local durable writes remain immediate; only optional background upload waits.
+    const interacting=()=>{s.interactingUntil=performance.now()+750;};
+    const inputEvents=['pointermove','pointerdown','wheel','keydown'];
+    for(const name of inputEvents)window.addEventListener(name,interacting,{passive:true});
+    s.recorder=DEVELOPMENT?PCOLMatchRecorder.create({version:VERSION,
+      isBusy:()=>!!s.shot?.physical||performance.now()<s.interactingUntil,
+      onChange:()=>renderRecording(s)}):null;
     const getTrial = () => trial || (trial = PCOLTrial.create({game:g,factories:require.m,
       isReady:() => app._currentController===g && m._gState===4 && !s.shot && (!s.modal||s.modalKind==='annotation') && !s.placement && (!s.pending||s.turnManager?.getStatus().busy) && !s.conceded && !s.frameEnd,
       getRules:() => ({...m._gContext,nominatedColour:s.nominatedColour,nominationSource:s.nominationSource,freeBallNominee:s.freeBallNominee,
@@ -4460,8 +4593,8 @@ const PCOLArena = (() => {
         skill:PCOLShotSkill,core:PCOLCore,geometry:PCOLSearchGeometry,policy:PCOLTacticalPolicy,brain:PCOLTacticalBrain,
         development:PCOLDevelopment,turnOptions:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),
         createClient:PCOLLocalAI.create,createTurnManager:PCOLTurnManager.create,
-        freeze:()=>{g._paused=true;s.recorder=null;s.recordingFrame=false;s.host?.remove();},game:g};
-    s.assessPlan=expected=>PCOLTacticalBrain.compliance(getSearchState({balls:balls(g),rules:{...m._gContext,scores:scores(m)}}),expected,PCOLSearchGeometry);
+        freeze:()=>{g._paused=true;s.recorder?.dispose();s.recorder=null;s.recordingFrame=false;s.host?.remove();},game:g};
+    s.assessPlan=(expected,after)=>PCOLTacticalBrain.compliance(getSearchState(after||{balls:balls(g),rules:{...m._gContext,scores:scores(m)}}),expected,PCOLSearchGeometry);
     const getSearch = () => search || (search = makeSearch());
     API.search = {run:options=>getSearch().run(options),cancel:()=>search?.cancel(),
       getStatus:()=>search?.getStatus() || {busy:false,lastResult:null}};
@@ -4546,7 +4679,10 @@ const PCOLArena = (() => {
     if(DEVELOPMENT)API.recording={getStatus:()=>s.recorder.getStatus(),setEnabled:v=>s.recorder.setEnabled(v),
       flush:()=>s.recorder.flush(),readPage:options=>s.recorder.readPage(options),exportJSONL:()=>s.recorder.exportJSONL(),download:()=>s.recorder.download(),mark:label=>markStroke(s,label)};
     s.getOpponent().setEnabled(false);
-    patches.push(() => {API.arena?.cancel();endRecordFrame(s,'uninstalled');s.recorder?.flush();s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();search?.cancel();trial?.dispose();});
+    patches.push(() => {API.arena?.cancel();endRecordFrame(s,'uninstalled');s.recorder?.dispose();
+      for(const name of inputEvents)window.removeEventListener(name,interacting);
+      s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();search?.cancel();trial?.dispose();
+      clearSceneHooks(s);releaseStrokeHistory(s);});
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
     wrap(app, 'onCurrentControllerStateChanged', original => function (...args) { const r = original.apply(this, args); if (app._currentController !== g) s.celebration.clear(); render(s); return r; });
     wrap(g, '_activateSubControl', original => function (...args) {
@@ -4554,13 +4690,15 @@ const PCOLArena = (() => {
         finishPracticeEditor(s,args[0]==='gaming');
         if(args[0]==='gaming')return;
       }
-      const r = original.apply(this,args); if (args[0] === 'replay') s.celebration.clear(); render(s); return r;
+      const r = original.apply(this,args); if (args[0] === 'replay') s.celebration.clear();
+      if(s.practice==='custom')render(s);else requestRender(s);return r;
     });
     wrap(g,'_onModelResponse',original=>function(...args){
       if(s.placement){g._gView.syncBalls(sim.getBalls(),sim.evolution);g._gView.requireRender();return;}
       return original.apply(this,args);
     });
-    wrap(g,'exit',original=>function(...args){API.arena?.cancel();endRecordFrame(s,'exited');s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();if(s.placement)finishPracticeEditor(s,false);destroyPracticePanel(s);return original.apply(this,args);});
+    wrap(g,'exit',original=>function(...args){API.arena?.cancel();endRecordFrame(s,'exited');s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();search?.cancel();trial?.dispose();trial=null;search=null;localAI=null;
+      if(s.placement)finishPracticeEditor(s,false);destroyPracticePanel(s);releaseStrokeHistory(s);clearSceneHooks(s);return original.apply(this,args);});
     wrap(g._fpc,'gotoState1',original=>function(...args){
       if(s.practice==='custom'){if(s.placement)finishPracticeEditor(s,true);s.practiceControlsHidden=true;render(s);}
       return original.apply(this,args);
@@ -4598,7 +4736,8 @@ const PCOLArena = (() => {
     });
     wrap(m, 'asyncLaunch', original => function (ready) {
       endRecordFrame(s,'restarted');
-      localAI?.clearPlan();localAI?.resetExperience();s.lastResult=null;s.lastBefore=null;s.aiConcessionMark=null;
+      clearSceneHooks(s);releaseStrokeHistory(s);
+      localAI?.clearPlan();localAI?.resetExperience();s.aiConcessionMark=null;
       s.hotseat = s.requestedHotseat;
       s.requestedHotseat = false;
       s.getOpponent().setEnabled(s.requestedEnhanced);s.requestedEnhanced=false;
@@ -4615,6 +4754,7 @@ const PCOLArena = (() => {
         s.practice=this._players.length===1?(s.requestedPractice||'standard'):null;
         s.requestedPractice=null;s.openEditorOnReady=s.practice==='custom';
         hookColourRespots(s);
+        for(const c of g._playerCtls)hookAI(s,c._ai);
         ready(payload);
         beginRecordFrame(s);
       });
@@ -4663,7 +4803,7 @@ const PCOLArena = (() => {
       }
       const before = takeSnapshot(s);
       const accepted = original.call(this, player);
-      if (accepted) { s.celebration.clear(); s.concessionTurn = null; s.shot = { before, trace: [], contacts: [], physical: false, localAI:player!==g._fpc.gPlayerIndex&&!s.hotseat&&!!s.opponent?.getStatus().enabled, touchWatches:new Map(before.touching.indices.map(i=>[i,{initial:true}])), pushedTouching:[] };
+      if (accepted) { s.celebration.clear(); s.concessionTurn = null; s.shot = { before, trace: PCOLShotTrace.create(sim.getBalls(),{cap:15001}), contacts: [], physical: false, localAI:player!==g._fpc.gPlayerIndex&&!s.hotseat&&!!s.opponent?.getStatus().enabled, touchWatches:new Map(before.touching.indices.map(i=>[i,{initial:true}])), pushedTouching:[] };
         if(DEVELOPMENT){recordTurn(s);s.shot.recordStarted=performance.now();
           s.shot.recordController=player===g._fpc.gPlayerIndex||s.hotseat?'human':s.opponent?.getStatus().enabled?s.aiSettings.engine:'original';
           s.shot.recordId=recordEvent(s,'stroke.start',{
@@ -4689,22 +4829,23 @@ const PCOLArena = (() => {
     // Existing resting contacts bypass presolve. Actual solver impulses detect
     // both first physical hits and directly pushing an initially touching ball.
     wrap(world.solver,'solveContact',original=>function (contact) {
+      if(!s.shot||s.predicting)return original.call(this,contact);
       // The native engine emits one instantaneous tip impulse. Count actual
       // additional impulses, never infer a second strike from ball proximity.
       if(s.shot&&!s.predicting&&contact===world.tipContact&&contact.getCloseSpeed() < -1e-6)s.shot.cueStrikes=(s.shot.cueStrikes||0)+1;
-      const recording=s.shot?.physical && !s.predicting && (contact.isSS || contact.bi.number===0);
-      const velocity=b=>({x:b.v.x,y:b.v.y,z:b.v.z});
-      const beforeVelocity=recording?{i:velocity(contact.bi),j:contact.isSS?velocity(contact.bj):null}:null;
-      const closeSpeed=recording?contact.getCloseSpeed():0;
+      const recording=s.shot.physical && (contact.bi.number===0 || contact.isSS&&(contact.bj.number===0||s.shot.touchWatches.size>0));
+      if(!recording)return original.call(this,contact);
+      const i=contact.bi.v,j=contact.isSS?contact.bj.v:null;
+      const ix=i.x,iy=i.y,iz=i.z,jx=j?.x,jy=j?.y,jz=j?.z,closeSpeed=contact.getCloseSpeed();
       const r=original.call(this,contact);
-      if (recording) recordSolvedContact(s,contact,beforeVelocity,closeSpeed);
+      recordSolvedContact(s,contact,ix,iy,iz,jx,jy,jz,closeSpeed);
       return r;
     });
     wrap(world, 'predict', original => function (...args) { s.predicting++; try { return original.apply(this, args); } finally { s.predicting--; } });
-    wrap(world, 'internalStep', original => function (...args) { const r = original.apply(this, args); sample(s); return r; });
+    wrap(world, 'internalStep', original => function (...args) { const r = original.apply(this, args); if(s.shot?.physical&&!s.predicting)sample(s); return r; });
     // Initial scene loading replaces internalStep with __internalStep__.
     // Hook that source too, so document-start installation records real steps.
-    wrap(world, '__internalStep__', original => function (...args) { const r = original.apply(this, args); sample(s); return r; });
+    wrap(world, '__internalStep__', original => function (...args) { const r = original.apply(this, args); if(s.shot?.physical&&!s.predicting)sample(s); return r; });
     wrap(m, '_locRoundResultResponse', original => function (...args) {
       if (s.practice==='custom' && s.shot) return finishFreePractice(s);
       if (this._gContext.ballOn === 65535 || !s.shot) return original.apply(this, args);
@@ -4716,7 +4857,7 @@ const PCOLArena = (() => {
       if(s.placement)finishPracticeEditor(s,false);
       s.practiceControlsHidden=false;
       s.celebration.clear();
-      s.practiceBefore=null;s.lastResult=null;s.lastBefore=null;s.aiConcessionMark=null;
+      releaseStrokeHistory(s);s.aiConcessionMark=null;
       s.pending = null; s.shot = null; s.conceded = null;s.frameEnd=null; s.concessionTurn = null; s.blackDecider=null; resetTurn(s); if (s.modal) closeModal(s);
       const response=original.apply(this, args);beginRecordFrame(s);return response;
     });
@@ -4727,7 +4868,8 @@ const PCOLArena = (() => {
         placePracticeLayout(s,layout);
         this._gContext.ballOn=65535;this._gContext.inHand=1;
       }
-      syncHotseat(s); const r = original.apply(this, args); render(s); return r;
+      syncHotseat(s); const r = original.apply(this, args);
+      if(s.practice==='custom')render(s);else requestRender(s);return r;
     });
     mount(s);
     return s;
