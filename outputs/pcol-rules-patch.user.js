@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.15.4
+// @version      0.15.5
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -3571,9 +3571,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.15.4";
+  const VERSION = "0.15.5";
   const DEVELOPMENT = true;
-  const BUILD_ID = "783e616edf7f";
+  const BUILD_ID = "2e0b3f4c6234";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -3591,6 +3591,23 @@ const PCOLArena = (() => {
   function clearSceneHooks(s) {
     for (const undo of s.scenePatches.splice(0).reverse()) undo();
     s.aiHooks=new WeakSet();s.refHooks=new WeakSet();s.deliveryHooks=new WeakSet();
+    s.aimGuide=null;
+  }
+  function syncAimGuide(s) {
+    const sight=s.g._gView?.gunsight;
+    if(!sight)return;
+    if(s.aimGuide!==sight){
+      s.aimGuide=sight;
+      wrap(sight,'update',original=>function(...args){
+        const result=original.apply(this,args);
+        // Native segment 4 is the yellow object-ball fan. Keep the native
+        // prediction, cue-ball segments and distance limits unchanged.
+        if(s.aiSettings.skill==='club'&&s.opponent?.getStatus().enabled)this.segments[4].alpha=0;
+        return result;
+      },s.scenePatches);
+      s.scenePatches.push(()=>{sight.needsUpdate=true;});
+    }
+    sight.needsUpdate=true;s.g._gView.requireRender();
   }
   function releaseStrokeHistory(s) {
     s.shot=null;s.lastTrace=[];s.lastContacts=[];s.lastBefore=null;s.lastResult=null;
@@ -4293,6 +4310,7 @@ const PCOLArena = (() => {
   function enableLocalAI(s,enabled) {
     s.afterAnnotation=null;
     s.getOpponent().setEnabled(enabled);
+    syncAimGuide(s);
     s.turnManager?.cancel();s.preparedShot=null;s.aiPreparedMark=null;
     if(!enabled && s.pending && s.g._model._gContext.playerIndex!==s.g._fpc.gPlayerIndex)resolveFoul(s,'continue');
     if(!s.shot)restartAI(s);render(s);
@@ -4327,9 +4345,10 @@ const PCOLArena = (() => {
     const summary=document.createElement('div');summary.className='ai-summary';
     summary.innerHTML='<div><strong>本地 AI</strong><small>根据球局比较进攻、走位、拆球与防守</small></div><span class="local-badge">本机选杆</span>';panel.append(summary);
     const skillLabels={club:'俱乐部',strong:'高手',expert:'专家'};
-    const descriptions={club:'更宽的击球误差',strong:'适中的击球误差',expert:'更小的击球误差'};
+    const descriptions={club:'更宽的击球误差；隐藏目标球黄色扇面',strong:'适中的击球误差',expert:'更小的击球误差'};
     const current=document.createElement('div');current.className='current-setting';current.setAttribute('aria-live','polite');
     const refresh=()=>{
+      syncAimGuide(s);
       current.textContent='当前准度：'+skillLabels[s.aiSettings.skill]+' · 自主战术判断';
       for(const b of panel.querySelectorAll('[data-setting]'))b.setAttribute('aria-pressed',String(s.aiSettings[b.dataset.setting]===b.dataset.value));
       render(s);
@@ -4691,6 +4710,7 @@ const PCOLArena = (() => {
         finishPracticeEditor(s,args[0]==='gaming');
         if(args[0]==='gaming')return;
       }
+      syncAimGuide(s);
       const r = original.apply(this,args); if (args[0] === 'replay') s.celebration.clear();
       if(s.practice==='custom')render(s);else requestRender(s);return r;
     });
