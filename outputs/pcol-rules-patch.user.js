@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.16.3
+// @version      0.16.4
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -4014,9 +4014,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.16.3";
+  const VERSION = "0.16.4";
   const DEVELOPMENT = true;
-  const BUILD_ID = "d0d74717dcfa";
+  const BUILD_ID = "e5e500c9bebd";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -4344,6 +4344,7 @@ const PCOLArena = (() => {
     if(!s.ensureAITurn())s.opponent?.step(null,()=>null,[]);
   }
   function closeModal(s) {
+    window.cancelAnimationFrame(s.modalFocusFrame);s.modalFocusFrame=null;
     s.shadow?.querySelector('.modal').replaceChildren();
     if (s.modal) s.g._paused = s.pausedBeforeModal;
     s.modal = false;s.modalKind=null;
@@ -4369,7 +4370,16 @@ const PCOLArena = (() => {
     panel.append(h, p, group);
     if (note) { const n = document.createElement('div'); n.className = 'note'; n.textContent = note; panel.append(n); }
     veil.append(panel); s.shadow.querySelector('.modal').replaceChildren(veil);
-    group.querySelector('button')?.focus();
+    // Let the inserted dialog paint before focusing: focus can force layout
+    // inside stroke adjudication. A second frame crosses that first paint.
+    window.cancelAnimationFrame(s.modalFocusFrame);
+    const button=group.querySelector('button');
+    s.modalFocusFrame=button?window.requestAnimationFrame(()=>{
+      s.modalFocusFrame=window.requestAnimationFrame(()=>{
+        s.modalFocusFrame=null;
+        if(s.modal&&s.shadow.querySelector('.panel')===panel&&!panel.contains(s.shadow.activeElement))button.focus({preventScroll:true});
+      });
+    }):null;
     return panel;
   }
   function concessionInfo(s) {
