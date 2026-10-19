@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.17.0
+// @version      0.17.1
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -773,6 +773,36 @@ const PCOLCelebration = (() => {
   return { create };
 })();
 
+
+/* Constant-size frame counters and a text-only update of the native result box. */
+const PCOLFrameResult=(()=>{
+  function create(){
+    let breaks;
+    const reset=()=>{breaks=[0,1].map(()=>({fifties:0,centuries:0}));};
+    reset();
+    return {reset,
+      score(actor,before,after){
+        if(before<50&&after>=50)breaks[actor].fifties++;
+        if(before<100&&after>=100){breaks[actor].fifties--;breaks[actor].centuries++;}
+      },
+      snapshot:()=>breaks.map(b=>({...b}))};
+  }
+  function render(box,players,breaks){
+    const row=(cells,label,values,title)=>{
+      const section=cells[0].parentElement;
+      section.querySelector('label').textContent=label;
+      section.title=title;
+      cells.forEach((cell,i)=>{cell.textContent=String(values[i]);});
+    };
+    row(box._pts,'FRAME SCORE',players.map((p,i)=>p.pts-players[1-i].penalty),'本局比分，包含对手犯规送分');
+    row(box._brks,'HIGHEST BREAK',players.map(p=>p.maxbrk),'本局最高单杆');
+    row(box._fouls,'50s / 100s',breaks.map(b=>`${b.fifties} / ${b.centuries}`),'单杆 50–99 分次数 / 单杆至少 100 分次数；分别计数');
+    row(box._accuracies,'FOUL POINTS',players.map(p=>-p.penalty),'本局因犯规送给对手的分数，已包含在比分中');
+    box._timeValue.parentElement.querySelector('label').textContent='FRAME TIME';
+    box._timeValue.parentElement.title='原作记录的本局用时';
+  }
+  return {create,render};
+})();
 
 const PCOLPractice = (() => {
   'use strict';
@@ -4044,9 +4074,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.17.0";
+  const VERSION = "0.17.1";
   const DEVELOPMENT = true;
-  const BUILD_ID = "e4a8dc28265f";
+  const BUILD_ID = "4cba7db3ec72";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -5051,6 +5081,7 @@ const PCOLArena = (() => {
     if (result.score > 0) { m._players[offender].pts += result.score; m._players[offender].brk += result.score; m._players[offender].scoreCount++; }
     else { m._players[offender].penalty += result.score; m._players[offender].brk = 0; ctx.playerIndex = (offender + 1) % m._players.length; }
     const breakScore=m._players[offender].brk;
+    s.resultStats.score(offender,breakBefore,breakScore);
     if ((breakBefore < 100 && breakScore >= 100) ||
         (breakScore === 147 && breakBefore < 147) || (breakScore === 155 && breakBefore < 155)) {
       s.celebration.show({ playerLabel: s.hotseat ? `玩家 ${offender + 1}` : m._players[offender].displayName, breakScore });
@@ -5097,6 +5128,7 @@ const PCOLArena = (() => {
     if (!m.reportPlayerStroke || !world.serialize || !world.restore || !world.internalStep) throw new Error('PCOL structure changed');
     const s = active = { app, g, hotseat: false, requestedHotseat: false, shot: null, predicting: 0, nominatedColour: null, freeBallNominee: null, freeBallAvailable: false, freeBallDeclined: false, pending: null, modal: false, conceded: null, concessionTurn: null, blackDecider: null, aiHooks: new WeakSet(), log: [], lastTrace: [], lastContacts: [] };
     s.celebration = PCOLCelebration.create({ document, window, host: document.documentElement });
+    s.resultStats=PCOLFrameResult.create();
     s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;s.refHooks=new WeakSet();s.deliveryHooks=new WeakSet();
     s.scenePatches=[];s.interactingUntil=0;
     hookColourRespots(s);
@@ -5299,6 +5331,7 @@ const PCOLArena = (() => {
     });
     wrap(m, 'asyncLaunch', original => function (ready) {
       endRecordFrame(s,'restarted');
+      s.resultStats.reset();
       clearSceneHooks(s);releaseStrokeHistory(s);
       localAI?.clearPlan();localAI?.resetExperience();s.aiConcessionMark=null;s.adaptiveFrameDone=false;
       s.hotseat = s.requestedHotseat;
@@ -5332,6 +5365,7 @@ const PCOLArena = (() => {
         return;
       }
       const r = original.apply(this, args);
+      PCOLFrameResult.render(this._uiLayer._registeredBox.duoResultBox,m._players,s.resultStats.snapshot());
       if (s.hotseat) {
         const pts = scores(m), winner = s.frameEnd?.winner ?? s.conceded?.winnerIndex ?? (pts[0] === pts[1] ? null : pts[0] > pts[1] ? 0 : 1);
         const box = this._uiLayer._registeredBox.duoResultBox;
@@ -5432,6 +5466,7 @@ const PCOLArena = (() => {
     });
     wrap(m, '_onResetResponse', original => function (...args) {
       endRecordFrame(s,'restarted');
+      s.resultStats.reset();
       s.opponent?.reset();localAI?.cancel();localAI?.clearPlan();localAI?.resetExperience();s.adaptiveFrameDone=false;
       if(s.placement)finishPracticeEditor(s,false);
       s.practiceControlsHidden=false;
