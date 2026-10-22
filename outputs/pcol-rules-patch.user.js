@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.20.0
+// @version      0.20.1
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -5166,9 +5166,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.20.0";
+  const VERSION = "0.20.1";
   const DEVELOPMENT = true;
-  const BUILD_ID = "29d9d36308d8";
+  const BUILD_ID = "a2314ff96dd0";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -6089,9 +6089,7 @@ const PCOLArena = (() => {
       options.append(button);buttons.push([button,row.id]);
     }
     const note=document.createElement('div');note.className='note';
-    note.textContent=/UHD Graphics 620/.test(environment.renderer)?
-      '当前使用 UHD 620。参考对局实测（1920 × 930 原画）：GPU 中位约 15 ms、p90 约 22 ms，60 帧的单帧预算为 16.7 ms；推荐流畅。':
-      '当前显卡：'+environment.renderer;
+    note.textContent='当前显卡：'+environment.renderer;
     const footer=document.createElement('div');footer.className='settings-footer';
     const done=document.createElement('button');done.type='button';done.className='primary';done.textContent='完成';done.onclick=()=>closeModal(s);
     footer.append(done);panel.append(options,detail,note,footer);refresh();done.focus();
