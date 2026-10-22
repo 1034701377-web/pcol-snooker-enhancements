@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.18.0
+// @version      0.19.0
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -3842,7 +3842,8 @@ const PCOLPlayerProfileStore=(()=>{
 /* Bounded, passive frame-gap diagnostics. The host supplies its existing tick;
  * no additional animation loop, performance marks, screenshots or disk writes. */
 const PCOLFrameMonitor = (() => {
-  const THRESHOLD_MS=50,PAUSE_MS=2000,SAMPLE_LIMIT=32,PHASE_LIMIT=12,LOAF_LIMIT=8;
+  const THRESHOLD_MS=50,WORK_THRESHOLD_MS=32,PAUSE_MS=2000,SAMPLE_LIMIT=32,PHASE_LIMIT=12,LOAF_LIMIT=8;
+  const IDLE_LOAD={workerBusy:false,mainWorkMs:0};
   const PHASES=['idle','ai','turn','realshot','stroke-end'];
   const phaseName=value=>PHASES.includes(value?.phase||value)?value?.phase||value:'idle';
   const finite=value=>Number.isFinite(value)?value:null;
@@ -3860,18 +3861,19 @@ const PCOLFrameMonitor = (() => {
   }
   const histogram=()=>({from50To100:0,from100To200:0,from200To500:0,from500:0});
   function countDuration(bins,ms){bins[ms<100?'from50To100':ms<200?'from100To200':ms<500?'from200To500':'from500']++;}
-  function create({window:win=globalThis.window,getPhase,onReport=()=>{},onLoad=()=>{},onBrowserEntry=()=>{}}={}) {
+  function create({window:win=globalThis.window,getPhase,getLoadContext=()=>IDLE_LOAD,onReport=()=>{},onLoad=()=>{},onBrowserEntry=()=>{}}={}) {
     const doc=win?.document,now=()=>win?.performance?.now?.()??Date.now();
     let disposed=false,last=null,phase='idle',lastPhase='idle',observer=null,taskObserver=null,supported=false,visibleSince=now();
     let frames,slowFrames,totalGapMs,maxGapMs,pauses,maxPauseMs,phaseCounts,samples,loafCount,loafs,gapHistogram,loafHistogram,work,loadSummary;
     let previousWork=null,loadStart=null,loadFrames=0,loadSlow=0,loadTotal=0,loadMax=0,loadLevel=0,stableWindows=0;
+    let previousWorkerBusy=false,loadBusyFrames=0,loadPressureFrames=0,loadWorkFrames=0;
     let phases=[],strokeEnds=[],strokeEndDropped=0,pendingStroke=false;
     function clear() {
       frames=slowFrames=totalGapMs=maxGapMs=pauses=maxPauseMs=loafCount=0;
       phaseCounts={idle:0,ai:0,turn:0,realshot:0,'stroke-end':0};samples=sampler(SAMPLE_LIMIT,'gapMs');loafs=sampler(LOAF_LIMIT,'durationMs');
       gapHistogram=histogram();loafHistogram=histogram();
       work={count:0,totalGameUpdateMs:0,totalScriptMs:0,maxGameUpdateMs:0,maxScriptMs:0};
-      loadSummary={windows:0,slowWindows:0,peakLevel:loadLevel};
+      loadSummary={windows:0,slowWindows:0,peakLevel:loadLevel,workerBusyFrames:0,pressureFrames:0,mainWorkFrames:0,idleResets:0};
     }
     function setPhase(value,time=now()) {
       if(disposed)return;
@@ -3883,8 +3885,17 @@ const PCOLFrameMonitor = (() => {
     function updatePhase(time) {
       if(typeof getPhase==='function')try{setPhase(getPhase(),time);}catch(_){}
     }
+    function resetLoadWindow(time) {
+      loadStart=time;loadFrames=loadSlow=loadTotal=loadMax=loadBusyFrames=loadPressureFrames=loadWorkFrames=stableWindows=0;
+    }
+    function reportLoad(time,reason) {
+      try{onLoad({at:time,level:loadLevel,restMs:[0,2,4,6,8][loadLevel],reason,
+        frames:loadFrames,slowFrames:loadSlow,meanGapMs:loadFrames?loadTotal/loadFrames:0,maxGapMs:loadMax,
+        workerBusyFrames:loadBusyFrames,pressureFrames:loadPressureFrames,mainWorkFrames:loadWorkFrames});}catch(_){}
+    }
     function resetBaseline() {
-      last=null;previousWork=null;loadStart=null;loadFrames=loadSlow=loadTotal=loadMax=stableWindows=0;
+      last=null;previousWork=null;previousWorkerBusy=false;resetLoadWindow(null);
+      if(loadLevel){loadLevel=0;reportLoad(now(),'suspended');}
       visibleSince=now();phases=[];setPhase(phase,visibleSince);
     }
     function visibilityChanged() {
@@ -3895,22 +3906,37 @@ const PCOLFrameMonitor = (() => {
       if(disposed||!Number.isFinite(time))return;
       updatePhase(time);
       if(doc?.hidden){last=null;return;}
-      if(last===null){last=time;loadStart=time;lastPhase=phase;return;}
-      const start=last,gap=time-start,previousPhase=lastPhase;
-      last=time;lastPhase=phase;
+      // mainWorkMs describes the completed preceding frame. Busy ownership
+      // comes from the preceding tick, so starting a job cannot inherit an
+      // idle render gap and finishing it immediately restores base pacing.
+      const loadContext=getLoadContext(),workerBusy=!!loadContext.workerBusy;
+      if(last===null){last=time;loadStart=time;lastPhase=phase;previousWorkerBusy=workerBusy;return;}
+      const start=last,gap=time-start,previousPhase=lastPhase,wasWorkerBusy=previousWorkerBusy;
+      last=time;lastPhase=phase;previousWorkerBusy=workerBusy;
       if(gap<=0)return;
       if(gap>PAUSE_MS){pauses++;maxPauseMs=Math.max(maxPauseMs,gap);resetBaseline();last=time;lastPhase=phase;loadStart=time;return;}
       frames++;totalGapMs+=gap;maxGapMs=Math.max(maxGapMs,gap);
-      loadFrames++;loadTotal+=gap;loadMax=Math.max(loadMax,gap);if(gap>=THRESHOLD_MS)loadSlow++;
+      if(workerBusy!==wasWorkerBusy){
+        if(!workerBusy&&loadLevel){loadLevel=0;loadSummary.idleResets++;reportLoad(time,'worker-idle');}
+        resetLoadWindow(time);
+      }else{
+        loadFrames++;loadTotal+=gap;loadMax=Math.max(loadMax,gap);if(gap>=THRESHOLD_MS)loadSlow++;
+        if(wasWorkerBusy){
+          loadBusyFrames++;loadSummary.workerBusyFrames++;
+          const slowWork=loadContext.mainWorkMs>=WORK_THRESHOLD_MS;
+          if(slowWork){loadWorkFrames++;loadSummary.mainWorkFrames++;}
+          if(gap>=THRESHOLD_MS||slowWork){loadPressureFrames++;loadSummary.pressureFrames++;}
+        }
+      }
       if(time-loadStart>=1000){
         const meanGapMs=loadTotal/loadFrames,slowRatio=loadSlow/loadFrames;
-        const slowWindow=loadMax>=150||meanGapMs>=25||slowRatio>=0.08;
+        const slowWindow=workerBusy&&loadPressureFrames>0&&(loadMax>=150||meanGapMs>=25||loadPressureFrames/loadBusyFrames>=0.08);
         if(slowWindow){loadLevel=Math.min(4,loadLevel+1);stableWindows=0;}
         else if(loadFrames>=30&&meanGapMs<22&&slowRatio<0.02&&loadMax<THRESHOLD_MS){if(++stableWindows>=3){loadLevel=Math.max(0,loadLevel-1);stableWindows=0;}}
         else stableWindows=0;
         loadSummary.windows++;if(slowWindow)loadSummary.slowWindows++;loadSummary.peakLevel=Math.max(loadSummary.peakLevel,loadLevel);
-        try{onLoad({at:time,level:loadLevel,restMs:[0,2,4,6,8][loadLevel],frames:loadFrames,slowFrames:loadSlow,meanGapMs,maxGapMs:loadMax});}catch(_){}
-        loadStart=time;loadFrames=loadSlow=loadTotal=loadMax=0;
+        reportLoad(time,slowWindow?'worker-pressure':workerBusy?'stable':'worker-idle');
+        loadStart=time;loadFrames=loadSlow=loadTotal=loadMax=loadBusyFrames=loadPressureFrames=loadWorkFrames=0;
       }
       if(gap<THRESHOLD_MS)return;
       slowFrames++;phaseCounts[previousPhase]++;countDuration(gapHistogram,gap);
@@ -4274,13 +4300,125 @@ const PCOLFrameProfiler = (() => {
   return {create,unpackReport,transferables};
 })();
 
+/* Rendering resolution is independent of table coordinates and simulation. */
+const PCOLRenderQuality=(()=>{
+  const KEY='pcol-render-quality';
+  const modes=[
+    {id:'native',label:'原画',description:'保持原生像素密度，画面最清晰'},
+    {id:'smooth',label:'流畅',description:'标准像素密度，减轻显卡负担'},
+    {id:'economy',label:'省资源',description:'75% 渲染尺寸，优先保持流畅'}
+  ];
+  function create({engine,storage,getView=()=>null,onChange=()=>{}}){
+    const nativeScale=engine.getHardwareScalingLevel();
+    const saved=storage?.getItem(KEY);
+    let mode=modes.some(row=>row.id===saved)?saved:'smooth';
+    const scaling=id=>id==='native'?nativeScale:Math.max(nativeScale,id==='smooth'?1:4/3);
+    function status(){return {mode,nativeScaling:nativeScale,scaling:engine.getHardwareScalingLevel(),
+      width:engine.getRenderWidth(),height:engine.getRenderHeight()};}
+    function apply(){
+      const next=scaling(mode);
+      if(engine.getHardwareScalingLevel()!==next)engine.setHardwareScalingLevel(next);
+      getView()?.requireRender();
+    }
+    apply();
+    return {modes,status,set(value){
+      if(!modes.some(row=>row.id===value))throw new RangeError('Unknown render quality');
+      if(value===mode)return status();
+      mode=value;storage?.setItem(KEY,mode);apply();const result=status();onChange(result);return result;
+    },dispose(){if(engine.getHardwareScalingLevel()!==nativeScale)engine.setHardwareScalingLevel(nativeScale);getView()?.requireRender();}};
+  }
+  return {create,modes};
+})();
+
+/* GPU results arrive on later frames. One query stays owned here until its
+ * result is available; reading telemetry never waits for GPU completion. */
+const PCOLRenderTelemetry=(()=>{
+  function create({engine,now=()=>performance.now(),window:win=globalThis.window,navigator:nav=globalThis.navigator}={}) {
+    const gl=engine._gl,extension=engine.webGLVersion===2?engine.getCaps().timerQuery:null;
+    const supported=!!extension;
+    let query=null,active=false,pending=false,disposed=false,status=supported?'ready':'unsupported';
+    let frameAt=0,rafTimestamp=null,rafDelayMs=null,rendered=false,frameWorkMs=0;
+    let queryFrameAt=null,pendingFrames=0,gpuMs=null,gpuFrameAt=null,gpuResultAt=null,invalidQueries=0;
+    function release(lost=false) {
+      if(query&&!lost){if(active)gl.endQuery(extension.TIME_ELAPSED_EXT);gl.deleteQuery(query);}
+      query=null;active=pending=false;queryFrameAt=null;pendingFrames=0;
+    }
+    function clearResult(){gpuMs=gpuFrameAt=gpuResultAt=null;}
+    function beginFrame(timestamp) {
+      frameAt=now();rafTimestamp=Number.isFinite(timestamp)?timestamp:null;
+      rafDelayMs=rafTimestamp===null?null:Math.max(0,frameAt-rafTimestamp);
+      rendered=false;frameWorkMs=0;
+      if(disposed||!supported)return;
+      if(engine._contextWasLost){release(true);clearResult();status='context-lost';return;}
+      if(status==='context-lost')status='ready';
+      if(!pending)return;
+      pendingFrames++;
+      if(gl.getParameter(extension.GPU_DISJOINT_EXT)){
+        invalidQueries++;release();clearResult();status='disjoint';return;
+      }
+      if(gl.getQueryParameter(query,gl.QUERY_RESULT_AVAILABLE)){
+        gpuMs=gl.getQueryParameter(query,gl.QUERY_RESULT)/1e6;
+        gpuFrameAt=queryFrameAt;gpuResultAt=frameAt;pending=false;pendingFrames=0;status='ready';
+      }else if(pendingFrames>=120){
+        invalidQueries++;release();status='query-expired';
+      }
+    }
+    function beginRender() {
+      rendered=true;
+      if(disposed||!supported||active||pending||engine._contextWasLost)return;
+      // Respect an existing Babylon instrument or another elapsed-time query.
+      if(engine._currentNonTimestampToken||gl.getQuery(extension.TIME_ELAPSED_EXT,gl.CURRENT_QUERY)){
+        status='query-in-use';return;
+      }
+      if(gl.getParameter(extension.GPU_DISJOINT_EXT)){clearResult();status='disjoint';return;}
+      if(!query)query=gl.createQuery();
+      gl.beginQuery(extension.TIME_ELAPSED_EXT,query);active=true;queryFrameAt=frameAt;status='measuring';
+    }
+    function endRender() {
+      if(!active)return;
+      if(engine._contextWasLost){release(true);clearResult();status='context-lost';return;}
+      gl.endQuery(extension.TIME_ELAPSED_EXT);active=false;pending=true;
+    }
+    function endFrame(){frameWorkMs=now()-frameAt;}
+    function context() {
+      return {rendered,frameWorkMs,rafTimestamp,rafDelayMs,gpuSupported:supported,gpuStatus:status,
+        gpuMs,gpuFrameAt,gpuResultAt,gpuResultAgeMs:gpuResultAt===null?null:Math.max(0,frameAt-gpuResultAt),
+        gpuPendingFrames:pendingFrames,gpuInvalidQueries:invalidQueries};
+    }
+    function environment(scene) {
+      const info=engine.getGlInfo(),canvas=engine.getRenderingCanvas();
+      const targets=new Set((scene?.textures||[]).filter(texture=>texture.isRenderTarget));
+      for(const target of scene?.customRenderTargets||[])targets.add(target);
+      const processes=new Set(scene?.postProcesses||[]);
+      for(const camera of scene?.cameras||[]){
+        for(const target of camera.customRenderTargets||[])targets.add(target);
+        for(const process of camera._postProcesses||[])if(process)processes.add(process);
+      }
+      return {renderer:info.renderer,vendor:info.vendor,glVersion:info.version,webGLVersion:engine.webGLVersion,
+        renderWidth:engine.getRenderWidth(),renderHeight:engine.getRenderHeight(),
+        canvasWidth:canvas.clientWidth,canvasHeight:canvas.clientHeight,devicePixelRatio:win?.devicePixelRatio??1,
+        hardwareScalingLevel:engine.getHardwareScalingLevel(),contextAttributes:gl.getContextAttributes(),
+        hardwareConcurrency:nav?.hardwareConcurrency??null,deviceMemory:nav?.deviceMemory??null,
+        gpuTimer:{supported,status,scope:'scene-render-gpu-commands',resultDelivery:'later-frame',maxPendingQueries:1},
+        rafTimingScope:'callback-start-minus-raf-timestamp',
+        renderTargets:[...targets].map(target=>{const size=target.getSize();return {name:target.name,width:size.width,height:size.height,samples:target.samples??1};}),
+        postProcesses:[...processes].filter(Boolean).map(process=>({name:process.name,width:process.width,height:process.height,samples:process.samples??1}))};
+    }
+    function reset(){release(!!engine._contextWasLost);clearResult();invalidQueries=0;rendered=false;frameWorkMs=0;rafTimestamp=rafDelayMs=null;status=supported?'ready':'unsupported';}
+    function dispose(){if(disposed)return;release(!!engine._contextWasLost);clearResult();disposed=true;status='disposed';}
+    return {beginFrame,beginRender,endRender,endFrame,context,environment,reset,dispose};
+  }
+  return {create};
+})();
+
 /* Instrument the native frame boundaries and fixed, coarse functions. No
  * per-ball hooks, physics changes, extra animation loop or stack collection. */
 const PCOLPerformanceHooks=(()=>{
-  function create({app,game,profiler,isEnabled=()=>true,getContext=()=>({}),onReport=()=>{}}){
+  function create({app,game,profiler,renderTelemetry,isEnabled=()=>true,getContext=()=>({}),onReport=()=>{}}){
     const permanent=[],sceneHooks=[],coverage=new Map();
     let scene=null,camera=null,view=null,frameOpen=false,recording=false,frameId=null,pendingReset=false,endReason=null;
     let disposed=false,inputAt=0,inputType='',lastEnvironmentAt=-Infinity,environment={},nextMatch=null,suspended=false;
+    let rafTimestamp=null,currentContext=null,frameStarted=0,lastMainWorkMs=0;
     const now=()=>performance.now();
     function timed(name,original){
       const id=profiler.register(name);
@@ -4294,7 +4432,12 @@ const PCOLPerformanceHooks=(()=>{
       const available=typeof object?.[key]==='function';coverage.set(name,available);
       if(!available)return;
       const own=Object.prototype.hasOwnProperty.call(object,key),original=object[key];
-      const wrapped=timed(name,original);
+      const measured=timed(name,original);
+      const wrapped=name==='scene.render'&&renderTelemetry?function(){
+        if(!frameOpen)return measured.apply(this,arguments);
+        renderTelemetry.beginRender();
+        try{return measured.apply(this,arguments);}finally{renderTelemetry.endRender();}
+      }:measured;
       object[key]=wrapped;
       scope.push(()=>{if(object[key]===wrapped){if(own)object[key]=original;else delete object[key];}});
     }
@@ -4327,24 +4470,34 @@ const PCOLPerformanceHooks=(()=>{
           beginObservers:engine?.onBeginFrameObservable?.observers?.length??null,
           endObservers:engine?.onEndFrameObservable?.observers?.length??null};
       }
-      return {...getContext(),...environment,frameId,inputType,inputAgeMs:inputAt?Math.max(0,at-inputAt):null};
+      currentContext={...getContext(),...environment,...renderTelemetry?.context(),frameId,inputType,inputAgeMs:inputAt?Math.max(0,at-inputAt):null};
+      return currentContext;
     }
     function report(value){if(value&&frameId)onReport(value,frameId);}
     function startMatch(id){
-      report(profiler.reset());frameId=id;recording=true;pendingReset=false;endReason=null;lastEnvironmentAt=-Infinity;syncScene(true);
+      report(profiler.reset());renderTelemetry?.reset();frameId=id;recording=true;pendingReset=false;endReason=null;lastEnvironmentAt=-Infinity;syncScene(true);
     }
     // The existing engine invokes these methods around its entire render loop.
     const engine=app._engine;
+    // On initial attach Babylon has not bound its rAF callback yet. Capture
+    // the loop before runRenderLoop binds it; also cover an already bound loop.
+    for(const key of ['_renderLoop','_bindedRenderFunction'])if(typeof engine?.[key]==='function'){
+      const original=engine[key];
+      const callback=function(timestamp){rafTimestamp=timestamp;return original.apply(this,arguments);};
+      engine[key]=callback;
+      permanent.push(()=>{if(engine[key]===callback)engine[key]=original;});
+    }
     coverage.set('engine.frame',typeof engine?.beginFrame==='function'&&typeof engine?.endFrame==='function');
     if(coverage.get('engine.frame')){
       const originalBegin=engine.beginFrame,originalEnd=engine.endFrame;
       const timedBegin=profiler.wrap('engine.beginFrame',originalBegin),timedEnd=profiler.wrap('engine.endFrame',originalEnd);
       const begin=function(...args){
+        frameStarted=now();
         if(nextMatch){const id=nextMatch;nextMatch=null;startMatch(id);}
         if(recording&&isEnabled()){
           suspended=false;
           if(pendingReset){report(profiler.reset());pendingReset=false;syncScene(true);}
-          syncScene();frameOpen=true;profiler.beginFrame();
+          syncScene();renderTelemetry?.beginFrame(rafTimestamp);frameOpen=true;profiler.beginFrame();
           return timedBegin.apply(this,args);
         }
         if(recording&&!suspended){const paused=profiler.drain('exit');if(paused){paused.reason='visibility-or-recording-pause';report(paused);}pendingReset=true;suspended=true;}
@@ -4352,7 +4505,9 @@ const PCOLPerformanceHooks=(()=>{
       };
       const end=function(...args){
         try{return frameOpen?timedEnd.apply(this,args):originalEnd.apply(this,args);}
-        finally{if(frameOpen){profiler.endFrame();frameOpen=false;if(endReason){report(profiler.drain(endReason));endReason=null;recording=false;}
+        finally{lastMainWorkMs=now()-frameStarted;if(frameOpen){renderTelemetry?.endFrame();
+          if(currentContext&&renderTelemetry)Object.assign(currentContext,renderTelemetry.context());
+          profiler.endFrame();frameOpen=false;if(endReason){report(profiler.drain(endReason));endReason=null;recording=false;}
           if(nextMatch){const id=nextMatch;nextMatch=null;startMatch(id);}}}
       };
       engine.beginFrame=begin;engine.endFrame=end;
@@ -4369,6 +4524,7 @@ const PCOLPerformanceHooks=(()=>{
     hook(game._model,'_response','rules.syncResponse');
     syncScene();
     return {context,report,syncScene,wrap:timed,
+      lastFrameWorkMs:()=>lastMainWorkMs,
       coverage:()=>Object.fromEntries(coverage),
       input(type){inputAt=now();inputType=type;},
       suspend(){
@@ -4376,6 +4532,7 @@ const PCOLPerformanceHooks=(()=>{
         const value=profiler.drain('exit');
         if(value){value.reason='visibility-pause';report(value);}
         pendingReset=true;suspended=true;
+        renderTelemetry?.reset();lastMainWorkMs=0;
       },
       enter(name){return !disposed&&recording&&isEnabled()?profiler.enter(profiler.register(name)):0;},
       leave(token){profiler.leave(token);},
@@ -4386,7 +4543,7 @@ const PCOLPerformanceHooks=(()=>{
       },
       beginMatch(id){if(frameOpen)nextMatch=id;else startMatch(id);},
       endMatch(reason){if(!recording)return;if(frameOpen)endReason=reason;else{report(profiler.drain(reason));recording=false;}},
-      dispose(){if(disposed)return;report(profiler.dispose());disposed=true;recording=false;restore(sceneHooks);restore(permanent);}
+      dispose(){if(disposed)return;report(profiler.dispose());renderTelemetry?.dispose();disposed=true;recording=false;restore(sceneHooks);restore(permanent);}
     };
   }
   return {create};
@@ -4989,9 +5146,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.18.0";
+  const VERSION = "0.19.0";
   const DEVELOPMENT = true;
-  const BUILD_ID = "a4e13b3f2892";
+  const BUILD_ID = "4953f5e338cf";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -5041,6 +5198,7 @@ const PCOLArena = (() => {
     if(s.performanceWindows.length>4)s.performanceWindows.shift();
     s.performanceHooks?.beginMatch(frameId);
     queuePerformance(s,'performance.capture',{hooks:s.performanceHooks?.coverage(),browser:s.frameMonitor?.coverage(),
+      rendering:s.renderTelemetry.environment(s.g._gView?._scene),renderQuality:s.renderQuality.status(),
       thresholds:{gapMs:50,workMs:32},preWindowMs:1500,postWindowMs:1000,continuousFrames:true},frameId);
   }
   function endRecordFrame(s,reason) {
@@ -5283,6 +5441,8 @@ const PCOLArena = (() => {
     s.host = host; s.shadow = shadow;
     const aiButton=document.createElement('button');aiButton.type='button';aiButton.className='ai';
     aiButton.textContent='与 AI 对局';aiButton.onclick=()=>showOpponent(s);shadow.querySelector('.bar').append(aiButton);
+    const graphicsButton=document.createElement('button');graphicsButton.type='button';graphicsButton.className='graphics';
+    graphicsButton.textContent='画面';graphicsButton.onclick=()=>showGraphics(s);shadow.querySelector('.bar').append(graphicsButton);
     if(DEVELOPMENT){
       const recordButton=document.createElement('button');recordButton.type='button';recordButton.className='recording';
       recordButton.onclick=()=>showRecording(s);shadow.querySelector('.bar').append(recordButton);
@@ -5298,7 +5458,7 @@ const PCOLArena = (() => {
     shadow.querySelector('.concede').onclick = () => showConcession(s);
     shadow.addEventListener('keydown', e => e.stopPropagation());
     shadow.addEventListener('pointerdown', e => e.stopPropagation());
-    s.ui=Object.fromEntries(['bar','drag','status','hotseat','practice','retry','choose','concede','ai','recording','mark']
+    s.ui=Object.fromEntries(['bar','drag','status','hotseat','practice','retry','choose','concede','ai','graphics','recording','mark']
       .map(name=>[name,shadow.querySelector('.'+name)]));
     render(s);
   }
@@ -5336,6 +5496,7 @@ const PCOLArena = (() => {
     const practiceAttribute=String(live && custom);
     if(s.practiceAttribute!==practiceAttribute){ui.bar.setAttribute('data-practice',practiceAttribute);s.practiceAttribute=practiceAttribute;}
     setUI(ui.drag,'hidden',live && custom);
+    setUI(ui.graphics,'textContent','画面 · '+PCOLRenderQuality.modes.find(row=>row.id===s.renderQuality.status().mode).label);
     setUI(ui.hotseat,'hidden',!home);setUI(ui.practice,'hidden',!home);
     const retry = ui.retry;
     setUI(retry,'hidden',!(live && s.practice));
@@ -5890,6 +6051,25 @@ const PCOLArena = (() => {
     const done=document.createElement('button');done.type='button';done.className='primary';done.textContent=fromHome?'开始对局 →':'继续对局';done.onclick=()=>{closeModal(s);if(fromHome)startEnhancedGame(s);};footer.append(done);panel.append(footer);
     refresh();done.focus();
   }
+  function showGraphics(s) {
+    const panel=dialog(s,'画面设置','调整渲染清晰度与显卡负担，选择后立即生效。',[]);
+    panel.querySelector('.choices').remove();dismissiblePanel(s,panel);
+    const options=document.createElement('div');options.className='setting-options';
+    const detail=document.createElement('div');detail.className='current-setting';
+    const buttons=[];
+    const refresh=()=>{const value=s.renderQuality.status();detail.textContent=`当前渲染尺寸：${value.width} × ${value.height}`;
+      for(const [button,id]of buttons)button.setAttribute('aria-pressed',String(value.mode===id));};
+    for(const row of PCOLRenderQuality.modes){
+      const button=document.createElement('button');button.type='button';button.className='setting-option';
+      const title=document.createElement('strong');title.textContent=row.label;
+      const description=document.createElement('small');description.textContent=row.description;
+      button.append(title,description);button.onclick=()=>{s.renderQuality.set(row.id);refresh();requestRender(s);};
+      options.append(button);buttons.push([button,row.id]);
+    }
+    const footer=document.createElement('div');footer.className='settings-footer';
+    const done=document.createElement('button');done.type='button';done.className='primary';done.textContent='完成';done.onclick=()=>closeModal(s);
+    footer.append(done);panel.append(options,detail,footer);refresh();done.focus();
+  }
   function showRecording(s) {
     const r=s.recorder.getStatus();
     const message=r.error?(r.failed?`本次有 ${r.failed} 条记录未能保存；已保存记录可导出。`:'本机保存失败，请保留页面并重试。'):!r.enabled?'自动记录已暂停。':r.pending?'已保存在当前浏览器；本地服务恢复后会自动补同步。':'自动记录球局、选杆与结果，保存在当前浏览器。';
@@ -6127,6 +6307,9 @@ const PCOLArena = (() => {
     s.resultStats=PCOLFrameResult.create();s.strokeAnalyses=new Set();
     s.practice=null;s.requestedPractice=null;s.practiceBefore=null;s.practiceLayout=null;s.openEditorOnReady=false;s.placement=null;s.practiceControlsHidden=false;s.refHooks=new WeakSet();s.deliveryHooks=new WeakSet();
     s.scenePatches=[];s.interactingUntil=0;
+    s.renderQuality=PCOLRenderQuality.create({engine:app._engine,storage:window.localStorage,getView:()=>g._gView,
+      onChange:status=>recordEvent(s,'performance.render-settings',status)});
+    s.renderTelemetry=PCOLRenderTelemetry.create({engine:app._engine,window,navigator:window.navigator});
     hookColourRespots(s);
     API.app = app;
     let trial = null, search = null, localAI = null;
@@ -6248,6 +6431,7 @@ const PCOLArena = (() => {
       }),onError:error=>localAIError(s,error),onChange:()=>requestRender(s)});
     s.frameMonitor=PCOLFrameMonitor.create({window,getPhase:()=>s.shot?.physical?'realshot':
       s.turnManager.isBusy()?'turn':localAI?.isBusy()?'ai':'idle',
+      getLoadContext:()=>({workerBusy:!!localAI?.getPerformance().workerBusy,mainWorkMs:s.performanceHooks?.lastFrameWorkMs()||0}),
       onLoad:load=>{
         if(s.computeLoadLevel===load.level)return;
         s.computeLoadLevel=load.level;
@@ -6262,7 +6446,7 @@ const PCOLArena = (() => {
       }});
     s.frameProfiler=PCOLFrameProfiler.create({packed:true,getContext:()=>s.performanceHooks?.context()||{},
       onReport:report=>s.performanceHooks?.report({...report,coverage:s.performanceHooks.coverage()})});
-    s.performanceHooks=PCOLPerformanceHooks.create({app,game:g,profiler:s.frameProfiler,
+    s.performanceHooks=PCOLPerformanceHooks.create({app,game:g,profiler:s.frameProfiler,renderTelemetry:s.renderTelemetry,
       isEnabled:()=>!!s.recorder&&s.recordingEnabled!==false&&!document.hidden,
       getContext:()=>({phase:s.shot?.physical?'realshot':s.turnManager.isBusy()?'turn':localAI?.isBusy()?'ai':'idle',
         turnId:s.currentTurnId,decisionId:s.currentDecisionId,strokeId:s.shot?.recordId||'',
@@ -6292,6 +6476,8 @@ const PCOLArena = (() => {
     });
     const visibilityChanged=()=>{if(document.hidden)s.performanceHooks.suspend();};
     document.addEventListener?.('visibilitychange',visibilityChanged);
+    API.graphics={getStatus:()=>s.renderQuality.status(),setQuality:mode=>s.renderQuality.set(mode),
+      getEnvironment:()=>s.renderTelemetry.environment(g._gView?._scene)};
     API.ai={setEnabled:enabled=>enableLocalAI(s,enabled),decide:options=>s.getLocalAI().decide(options),
       cancel:()=>{s.afterAnnotation=null;s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();},
       getStatus:()=>({...(localAI?.getStatus()||{busy:false,phase:'idle'}),profileStorage:profileStore.getStatus(),turn:s.turnManager.getStatus(),settings:{...s.aiSettings},opponent:s.opponent?.getStatus()||{enabled:false}})};
@@ -6303,7 +6489,7 @@ const PCOLArena = (() => {
       document.removeEventListener?.('visibilitychange',visibilityChanged);
       for(const name of inputEvents)window.removeEventListener(name,interacting);
       s.turnManager.cancel();s.opponent?.reset();localAI?.dispose({permanent:true});search?.cancel();trial?.dispose();s.frameMonitor?.dispose();
-      s.performanceHooks.dispose();flushBrowserEntries(s);flushPerformance(s,true);
+      s.performanceHooks.dispose();s.renderQuality.dispose();flushBrowserEntries(s);flushPerformance(s,true);
       Promise.resolve(s.analysisFlush).then(()=>s.recorder?.dispose());
       clearSceneHooks(s);releaseStrokeHistory(s);});
     if (require?.c?.[30]?.exports) wrap(require.c[30].exports, 'getFoulDescription', () => description);
