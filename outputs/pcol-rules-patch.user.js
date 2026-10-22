@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.17.3
+// @version      0.17.4
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
 // @run-at       document-start
 // @grant        unsafeWindow
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      127.0.0.1
 // @noframes
 // @updateURL    https://raw.githubusercontent.com/1034701377-web/pcol-snooker-enhancements/main/outputs/pcol-rules-patch.user.js
@@ -3380,7 +3382,7 @@ const PCOLDecisionWorkerSource = "/* Per-stroke Float64 trajectory. Native ball 
  * completion, ordered log forwarding, and no decision-time physics on the UI thread. */
 const PCOLDecisionClient=(()=>{
   const failure=(code,message)=>Object.assign(new Error(message),{code});
-  function create({getTrial,getState,getContext,onEvent=()=>{},onChange=()=>{},savedProfile=null,onProfile=()=>{},
+  function create({getTrial,getState,getContext,onEvent=()=>{},onChange=()=>{},savedProfile=null,loadProfile=null,onProfile=()=>{},
     workerFactory=()=>{const url=URL.createObjectURL(new Blob([PCOLDecisionWorkerSource],{type:'text/javascript'}));
       try{return new Worker(url);}finally{URL.revokeObjectURL(url);}}}) {
     let worker=null,runtime=null,ready=null,pending=null,active=null,sequence=0,running=null,closed=false;
@@ -3391,6 +3393,15 @@ const PCOLDecisionClient=(()=>{
     let state={busy:false,phase:'idle',lastDecision:null},turnState={busy:false,failed:false,phase:'idle',lastResult:null};
     let turnChanged=()=>{};
     const changed=()=>onChange({...state});
+    // Restore before observations or decisions reach the worker. Queued shots
+    // receive IDs after the restored watermark, never duplicate old samples.
+    const profileReady=loadProfile?Promise.resolve().then(loadProfile).then(saved=>{
+      if(!saved)return;
+      opponentCheckpoint=saved.checkpoint;opponentProfile=saved.profile;balance=saved.balance;
+      observationId=opponentCheckpoint.lastId;
+      for(const observation of humanObservations)observation.id=++observationId;
+      frameProfile=opponentProfile;changed();
+    }):null;
     function stopWorker(error=failure('cancelled','AI decision cancelled')){
       worker?.terminate();worker=null;runtime=null;ready=null;
       if(pending){clearTimeout(pending.timer);const old=pending;pending=null;old.reject(error);}
@@ -3415,7 +3426,7 @@ const PCOLDecisionClient=(()=>{
           opponentProfile=data.profile;frameProfile=data.frameProfile||frameProfile;
           onProfile({checkpoint:opponentCheckpoint,profile:opponentProfile,balance});
           while(humanObservations.length&&humanObservations[0].id<=data.throughId)humanObservations.shift();
-          onEvent('opponent.update',{profile:data.profile,execution:data.execution,frameProfile,checkpoint:data.checkpoint,observations:data.observations,
+          onEvent('opponent.update',{profile:data.profile,execution:data.execution,frameProfile,checkpoint:data.checkpoint,balance,observations:data.observations,
             elapsedMs:data.elapsedMs,discardedObservations});discardedObservations=0;return;
         }
         if(data.type==='event'){onEvent(data.kind,data.data);return;}
@@ -3443,6 +3454,7 @@ const PCOLDecisionClient=(()=>{
       if(running||closed||!queue.length)return;
       const task=running=queue.shift();
       try{
+        if(profileReady)await profileReady;
         if(task.job?.cancelled)throw failure('cancelled','AI decision cancelled');
         if(task.type==='analyze-stroke')ensureWorker();else await initialize();
         if(task.job?.cancelled)throw failure('cancelled','AI decision cancelled');
@@ -3528,11 +3540,15 @@ const PCOLDecisionClient=(()=>{
         frameProfile=opponentProfile;control('resetExperience');
       },cancel,
       recordMatch({humanScore,aiScore,difficulty}){
-        const target={easy:.35,matched:.5,challenge:.65}[difficulty];
-        if(target===undefined)return;
-        const outcome=aiScore>humanScore?1:aiScore<humanScore?0:.5;
-        balance=Math.max(-Math.log(2),Math.min(Math.log(2),balance+.06*(outcome-target)));
-        onProfile({checkpoint:opponentCheckpoint,profile:opponentProfile,balance});
+        const record=()=>{
+          const target={easy:.35,matched:.5,challenge:.65}[difficulty];
+          if(target===undefined)return;
+          const outcome=aiScore>humanScore?1:aiScore<humanScore?0:.5;
+          balance=Math.max(-Math.log(2),Math.min(Math.log(2),balance+.06*(outcome-target)));
+          onProfile({checkpoint:opponentCheckpoint,profile:opponentProfile,balance});
+          onEvent('opponent.checkpoint',{checkpoint:opponentCheckpoint,profile:opponentProfile,balance,reason:'frame-result'});
+        };
+        return profileReady?profileReady.then(record):record();
       },
       dispose({permanent=false}={}){
         const remainClosed=closed||permanent;closed=true;
@@ -3543,6 +3559,94 @@ const PCOLDecisionClient=(()=>{
       },isBusy:()=>!!active,getStatus:()=>({...state,worker:!!worker,execution:'worker',profile:opponentProfile})};
   }
   return {create};
+})();
+
+/* Persistence only: no learning, physics or log replay on the game thread.
+ * A versioned checkpoint lives in extension storage and an optional disk mirror. */
+const PCOLPlayerProfileStore=(()=>{
+  const KEY='pcol-player-profile-durable-v1',LEGACY='pcol-player-profile-v2';
+  const counter=n=>Number.isSafeInteger(n)&&n>=0;
+  function validValue(value){
+    const c=value?.checkpoint,p=value?.profile;
+    return c?.schema===2&&c.playerIndex===0&&c.guideMode==='native'&&
+      ['revision','lastId','seen','ignored'].every(k=>counter(c[k]))&&
+      ['global','standard','long'].every(k=>c[k]&&['slow','recent'].every(a=>Array.isArray(c[k][a])&&c[k][a].length===5&&c[k][a].every(Number.isFinite))&&
+        Number.isFinite(c[k].weight)&&c[k].weight>=0&&['attempts','pots','fouls'].every(a=>counter(c[k][a])))&&
+      Array.isArray(c.tempo)&&c.tempo.length<=64&&c.tempo.every(Number.isFinite)&&c.dimensions&&
+      Object.values(c.dimensions).every(d=>['sum','weight','recent','attempts'].every(k=>Number.isFinite(d[k])))&&
+      p?.kind==='player-profile'&&p.playerIndex===c.playerIndex&&p.guideMode===c.guideMode&&p.revision===c.revision&&
+      ['angle','longAngle','confidence'].every(k=>Number.isFinite(p[k]))&&Number.isFinite(value.balance);
+  }
+  const valid=r=>r?.schema===1&&Number.isFinite(r.updatedAt)&&validValue(r.value);
+  function newer(a,b){
+    if(!valid(a))return valid(b)?b:null;
+    if(!valid(b))return a;
+    // Learning revision never resets on new frames. A fresh/old browser cannot
+    // erase a richer checkpoint merely by saving it at a later wall-clock time.
+    const delta=a.value.checkpoint.revision-b.value.checkpoint.revision;
+    return delta?delta>0?a:b:a.updatedAt>=b.updatedAt?a:b;
+  }
+  function create({readLocal,writeLocal,readLegacy=()=>null,exchange,now=Date.now,
+    schedule=(fn,ms)=>setTimeout(fn,ms),unschedule=clearTimeout,onChange=()=>{}}){
+    let record=null,timer=null,inFlight=null,disposed=false,loaded=false;
+    let status={local:false,disk:false,pending:false,reloadRequired:false,error:null};
+    const notify=()=>onChange({...status});
+    try{record=newer(readLocal(),null);if(!record){const value=readLegacy();if(validValue(value))record={schema:1,updatedAt:0,value};}}
+    catch(_){status.error='local_read_failed';}
+    function persist(){
+      if(!record)return;
+      try{writeLocal(record);status.local=true;status.error=null;}
+      catch(_){status.local=false;status.error='local_write_failed';}
+    }
+    persist();
+    function later(ms=1000){if(!disposed&&record&&!timer)timer=schedule(()=>{timer=null;void sync();},ms);}
+    function sync(){
+      if(inFlight)return inFlight;
+      if(timer){unschedule(timer);timer=null;}
+      const sent=record;
+      inFlight=(async()=>{
+        try{
+          const result=await exchange(sent),incoming=result.record;
+          if(incoming!==null&&!valid(incoming))throw new Error('invalid_profile');
+          const chosen=newer(record,incoming);
+          if(loaded&&chosen===incoming&&incoming?.value.checkpoint.revision>(record?.value.checkpoint.revision??0))status.reloadRequired=true;
+          record=chosen;persist();status.disk=true;
+          status.pending=!!record&&(!incoming||newer(record,incoming)===record&&
+            (record.updatedAt!==incoming.updatedAt||record.value.checkpoint.revision!==incoming.value.checkpoint.revision));
+        }catch(_){status.disk=false;status.pending=!!record;}
+        finally{inFlight=null;notify();if(status.pending)later(status.disk?1000:30000);}
+        return record?.value||null;
+      })();
+      return inFlight;
+    }
+    const ready=sync().then(value=>{loaded=true;return value;});
+    return {ready,get:()=>record?.value||null,getStatus:()=>({...status}),
+      save(value){
+        if(!validValue(value)){status.error='invalid_profile';notify();return false;}
+        // Re-read the small extension value to avoid overwriting a newer tab.
+        try{record=newer(record,readLocal());}catch(_){}
+        if(record&&record.value.checkpoint.revision>value.checkpoint.revision){status.reloadRequired=true;notify();return false;}
+        record={schema:1,updatedAt:Math.max(now(),(record?.updatedAt||0)+1),value:structuredClone(value),
+          ...(record?.recovery?{recovery:record.recovery}:{})};
+        persist();status.pending=true;notify();later();return true;
+      },flush:async()=>{await ready;if(inFlight)await inFlight;return sync();},
+      dispose(){disposed=true;if(timer)unschedule(timer);timer=null;}};
+  }
+  function createBrowser({storage,onChange}={}){
+    const extension=typeof GM_getValue==='function'&&typeof GM_setValue==='function';
+    return create({onChange,
+      readLocal:()=>extension?GM_getValue(KEY,null):JSON.parse(storage?.getItem(KEY)||'null'),
+      writeLocal:value=>{if(extension)GM_setValue(KEY,value);else if(storage)storage.setItem(KEY,JSON.stringify(value));else throw new Error('storage_unavailable');},
+      readLegacy:()=>JSON.parse(storage?.getItem(LEGACY)||'null'),
+      exchange:record=>{
+        const url='http://127.0.0.1:18763/profile',body=JSON.stringify({record}),headers={'Content-Type':'application/json','X-PCOL-Client':'pcol-snooker'};
+        if(typeof GM_xmlhttpRequest!=='function')return fetch(url,{method:'POST',headers,body,signal:AbortSignal.timeout(2500)}).then(r=>{if(!r.ok)throw new Error('profile_unavailable');return r.json();});
+        return new Promise((resolve,reject)=>GM_xmlhttpRequest({url,method:'POST',headers,data:body,anonymous:true,timeout:2500,
+          onload:r=>{try{if(r.status!==200)throw new Error('profile_unavailable');resolve(JSON.parse(r.responseText));}catch(error){reject(error);}},
+          onerror:()=>reject(new Error('profile_unavailable')),ontimeout:()=>reject(new Error('profile_timeout'))}));
+      }});
+  }
+  return {KEY,validValue,valid,newer,create,createBrowser};
 })();
 
 /* Bounded, passive frame-gap diagnostics. The host supplies its existing tick;
@@ -4188,9 +4292,9 @@ const PCOLArena = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.17.3";
+  const VERSION = "0.17.4";
   const DEVELOPMENT = true;
-  const BUILD_ID = "10f9d071edab";
+  const BUILD_ID = "604df81d1b27";
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
   const FOULS = [[1, '未先碰到目标球'], [2, '先碰错球'], [4, '非法进球'], [8, '白球落袋'], [16, '球离开球台'], [32, '非法跳球'], [64, '利用自由球形成违规斯诺克'], [128, '出杆推动了相贴球（推杆）'], [256, '同一杆中杆头重复击中白球（连击）']];
@@ -5012,6 +5116,8 @@ const PCOLArena = (() => {
       const profile=s.getLocalAI().getStatus().profile,d=profile?.dimensions;
       current.textContent='当前难度：'+skillLabels[s.aiSettings.difficulty]+(profile?
         ` · 已识别进攻 ${profile.attempts} 杆（长台 ${profile.longAttempts}） · 衔接 ${d?.position?.samples||0} 次 · 防守 ${d?.safety?.samples||0} 次 · 解球 ${d?.escape?.samples||0} 次`:' · 正在了解你的水平');
+      const saved=s.profileStore.getStatus();
+      current.textContent+=' · '+(saved.reloadRequired?'发现较新画像，请刷新载入':saved.error?'画像保存异常':saved.disk&&!saved.pending?'画像已同步到电脑':saved.local?'画像已本地保存，待同步到电脑':'画像载入中');
       for(const b of panel.querySelectorAll('[data-setting]'))b.setAttribute('aria-pressed',String(s.aiSettings[b.dataset.setting]===b.dataset.value));
       render(s);
     };
@@ -5328,9 +5434,11 @@ const PCOLArena = (() => {
       turnOptions:PCOLTurnOptions.create({geometry:PCOLSearchGeometry,core:PCOLCore}),
       createRecorder:PCOLMatchRecorder.create,createClient:PCOLLocalAI.create,createTurnManager:PCOLTurnManager.create});
     s.recordAIOutcome=result=>localAI?.recordOutcome(result);
+    const profileStore=PCOLPlayerProfileStore.createBrowser({storage:window.localStorage,onChange:()=>requestRender(s)});
+    s.profileStore=profileStore;
     s.getLocalAI = () => localAI || (localAI = PCOLDecisionClient.create({getTrial,getState:getSearchState,onChange:()=>requestRender(s),
-      savedProfile:JSON.parse(window.localStorage?.getItem('pcol-player-profile-v2')||'null'),
-      onProfile:profile=>window.localStorage?.setItem('pcol-player-profile-v2',JSON.stringify(profile)),
+      savedProfile:profileStore.get(),loadProfile:()=>profileStore.ready,
+      onProfile:profile=>profileStore.save(profile),
       onEvent:(kind,data)=>recordEvent(s,kind,data),
       getContext:()=>({ballOn:m._gContext.ballOn,playerIndex:m._gContext.playerIndex,nRounds:m._gContext.nRounds,scores:scores(m),
         nominatedColour:s.nominatedColour,freeBall:{available:s.freeBallAvailable,nominee:s.freeBallNominee},
@@ -5405,11 +5513,12 @@ const PCOLArena = (() => {
     };
     API.ai={setEnabled:enabled=>enableLocalAI(s,enabled),decide:options=>s.getLocalAI().decide(options),
       cancel:()=>{s.afterAnnotation=null;s.turnManager.cancel();s.opponent?.reset();localAI?.cancel();},
-      getStatus:()=>({...(localAI?.getStatus()||{busy:false,phase:'idle'}),turn:s.turnManager.getStatus(),settings:{...s.aiSettings},opponent:s.opponent?.getStatus()||{enabled:false}})};
+      getStatus:()=>({...(localAI?.getStatus()||{busy:false,phase:'idle'}),profileStorage:profileStore.getStatus(),turn:s.turnManager.getStatus(),settings:{...s.aiSettings},opponent:s.opponent?.getStatus()||{enabled:false}})};
     if(DEVELOPMENT)API.recording={getStatus:()=>s.recorder.getStatus(),setEnabled:v=>s.recorder.setEnabled(v),
       flush:()=>s.recorder.flush(),readPage:options=>s.recorder.readPage(options),exportJSONL:()=>s.recorder.exportJSONL(),download:()=>s.recorder.download(),mark:label=>markStroke(s,label)};
     s.getOpponent().setEnabled(false);
     patches.push(() => {API.arena?.cancel();endRecordFrame(s,'uninstalled');
+      profileStore.dispose();
       for(const name of inputEvents)window.removeEventListener(name,interacting);
       s.turnManager.cancel();s.opponent?.reset();localAI?.dispose({permanent:true});search?.cancel();trial?.dispose();s.frameMonitor?.dispose();
       Promise.resolve(s.analysisFlush).then(()=>s.recorder?.dispose());
