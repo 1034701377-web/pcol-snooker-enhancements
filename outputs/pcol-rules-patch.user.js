@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.23.0
+// @version      0.24.0
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -655,247 +655,57 @@ const PCOLCore = (() => {
   return Object.freeze({RADIUS,RED,COLOUR_ALL,FOUL,CONTACT_EPS,TOUCH_EPS,ballOnNumbers,pinkRespotX,touchingStatus,remainingPoints,concessionStatus,earlyFrameOutcome,isSnookered,hasDirectHit,assessMiss,inferColour,evaluateJump,blackFrameOutcome,adjudicate});
 })();
 
+/* Non-interactive broadcast ribbon. One score is mounted at a time. */
 const PCOLCelebration = (() => {
   'use strict';
-  const DURATION = 3200;
-  const TIERS = {
-    century: { duration: DURATION, eyebrow: 'CENTURY BREAK', title: '单杆破百', sparks: 10 },
-    maximum: { duration: 4600, eyebrow: 'MAXIMUM BREAK', title: '完美满分', sparks: 24 },
-    ultimate: { duration: 6000, eyebrow: 'ULTIMATE BREAK', title: '极限满分', sparks: 40 }
+  const tiers={
+    century:{duration:3200,label:'CENTURY BREAK',title:'单杆破百'},
+    maximum:{duration:4600,label:'MAXIMUM BREAK',title:'完美满分'},
+    ultimate:{duration:6000,label:'ULTIMATE BREAK',title:'极限满分'}
   };
-  const STYLE = `
-    :host { all: initial; position: fixed; z-index: 2147483646; inset: 19% 16px auto;
-      display: flex; justify-content: center; pointer-events: none; color-scheme: dark; }
-    *, *::before, *::after { box-sizing: border-box; }
-    .card { position: relative; display: flex; align-items: center; gap: 28px;
-      width: min(580px, 100%); min-height: 164px; padding: 24px 38px;
-      color: #f9efd5; border: 1px solid #d8b87466; border-radius: 3px;
-      background: radial-gradient(ellipse at 18% 75%, #355c4380, transparent 60%),
-        linear-gradient(115deg, #102d25f5, #0b1e1af5 70%, #172e24f5);
-      box-shadow: 0 18px 70px #0008, inset 0 0 36px #d7bd6b08;
-      font: 14px/1.4 "Microsoft YaHei", "PingFang SC", sans-serif;
-      animation: arrival ${DURATION}ms cubic-bezier(.22,.8,.3,1) both; }
-    .card::before, .card::after { content: ''; position: absolute; height: 1px;
-      left: 25px; right: 25px; background: linear-gradient(90deg, transparent, #edcc85, transparent); }
-    .card::before { top: 7px; } .card::after { bottom: 7px; }
-    .glow { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; }
-    .glow::before { content: ''; position: absolute; inset: -100% -50%;
-      background: linear-gradient(110deg, transparent 43%, #fff3be18 49%, transparent 55%);
-      animation: glint 1500ms 250ms ease-out both; }
-    .score { position: relative; flex: 0 0 auto; min-width: 150px; text-align: center;
-      border-right: 1px solid #c5a46555; padding-right: 28px; }
-    .number { display: block; color: #f8dea0; font: 500 80px/.95 Georgia, "Times New Roman", serif;
-      font-variant-numeric: tabular-nums; letter-spacing: -5px; text-shadow: 0 0 30px #f4ca6750; }
-    .score-label { display: block; margin-top: 12px; color: #c4b791; font-size: 10px; letter-spacing: 4px; }
-    .words { position: relative; min-width: 0; }
-    .eyebrow { color: #dabe7d; font-size: 10px; letter-spacing: 3px; }
-    .title { margin: 7px 0 8px; font-size: 29px; font-weight: 500; letter-spacing: 5px; }
-    .player { color: #d1dcd2; font-size: 12px; letter-spacing: 1px; overflow-wrap: anywhere; }
-    .diamond { display: inline-block; width: 5px; height: 5px; margin-right: 10px;
-      background: #dabe7d; transform: rotate(45deg); vertical-align: 2px; }
-    .spark { position: absolute; left: var(--x); top: var(--y); width: 2px; height: 2px;
-      background: #ffe7ab; box-shadow: 0 0 7px #ebc76f; border-radius: 50%; opacity: 0;
-      animation: spark 1900ms var(--delay) ease-out both; }
-    @keyframes arrival { 0% { opacity: 0; transform: translateY(14px) scale(.97); }
-      14%, 80% { opacity: 1; transform: translateY(0) scale(1); }
-      100% { opacity: 0; transform: translateY(-8px) scale(1); } }
-    @keyframes glint { from { transform: translateX(-45%); } to { transform: translateX(45%); } }
-    @keyframes spark { 0% { opacity: 0; transform: translateY(12px); }
-      20% { opacity: .7; } 100% { opacity: 0; transform: translateY(-20px); } }
-    .stage { position: relative; display: flex; justify-content: center; isolation: isolate;
-      width: min(660px, 100%); animation: arrival var(--duration) cubic-bezier(.22,.8,.3,1) both; }
-    .stage.ultimate { width: min(720px, 100%); }
-    .stage .card { z-index: 1; width: 100%; min-height: 190px; padding: 30px 42px;
-      gap: 34px; border-color: #edcf8cb5; border-radius: 5px; animation: none;
-      background: radial-gradient(ellipse at 16% 70%, #54724d80, transparent 58%),
-        linear-gradient(115deg, #15352bf5, #0b211cf7 65%, #223c2cf5);
-      box-shadow: 0 20px 80px #0009, 0 0 44px #d6b55a25, inset 0 0 45px #dfc47f12; }
-    .stage .card::before, .stage .card::after { left: 19px; right: 19px; height: 2px;
-      background: linear-gradient(90deg, transparent, #b9914b 20%, #fff1c7 50%, #b9914b 80%, transparent); }
-    .stage .score { z-index: 2; min-width: 220px; padding-right: 34px; }
-    .stage .number { position: relative; font-size: 100px; letter-spacing: -6px;
-      color: #ffe5a0; background: linear-gradient(160deg, #fffae9 8%, #f2cb70 52%, #ffe8b0 77%, #aa7835);
-      background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-      text-shadow: none; filter: drop-shadow(0 0 16px #eac36a50); }
-    .stage .score-label { position: relative; margin-top: 15px; color: #e5ce97; }
-    .stage .words { z-index: 2; }
-    .stage .eyebrow { color: #e7cd93; letter-spacing: 3px; }
-    .stage .title { color: #fff1d0; font-size: 34px; letter-spacing: 6px; }
-    .stage .glow::before { background: linear-gradient(110deg, transparent 38%, #fff3be30 49%, transparent 60%);
-      animation: glint 2100ms 300ms ease-out both; }
-    .crest { position: absolute; width: 204px; height: 224px;
-      left: calc(50% - 17px); top: 50%; transform: translate(-50%, -50%);
-      color: #e6c67f; opacity: .66; pointer-events: none; }
-    .crest svg { width: 100%; height: 100%; overflow: visible; }
-    .effects { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
-    .aura { position: absolute; inset: -140px -110px;
-      background: radial-gradient(ellipse, #e6c76722, transparent 62%);
-      animation: aura 2600ms 150ms ease-out both; }
-    .rays { position: absolute; width: 600px; height: 600px; left: 50%; top: 50%;
-      background: repeating-conic-gradient(from 6deg, transparent 0deg 16deg, #f3d9893d 18deg, transparent 20deg 30deg);
-      mask-image: radial-gradient(circle, transparent 15%, #000 33%, transparent 68%);
-      animation: radiance 4000ms ease-out both; }
-    .stage .spark { width: 3px; height: 3px; background: #ffe7a5; box-shadow: 0 0 9px #efc768;
-      animation: drift 2900ms var(--delay) ease-out both; }
-    .stage .spark:nth-child(3n) { width: 4px; height: 7px; border-radius: 1px; }
-    .burst { position: absolute; left: var(--x); top: var(--y); width: 1px; height: 1px; }
-    .burst i { position: absolute; width: 2px; height: 7px; border-radius: 2px;
-      background: #fff0bc; box-shadow: 0 0 9px #f3cb75; opacity: 0;
-      animation: firework 1700ms var(--delay) cubic-bezier(.12,.62,.26,1) both; }
-    .ultimate .card { min-height: 218px; padding: 36px 46px; border-color: #f3dfb3;
-      background: radial-gradient(ellipse at 8% 70%, #446d6180, transparent 57%),
-        radial-gradient(ellipse at 100% 10%, #ae91542b, transparent 60%),
-        linear-gradient(115deg, #15372ff7, #0c2220fa 65%, #213c30f7);
-      box-shadow: 0 24px 90px #0009, 0 0 70px #e5c76b38, inset 0 0 70px #bceee212; }
-    .ultimate .score { min-width: 245px; }
-    .ultimate .number { font-size: 114px; background-image: linear-gradient(155deg, #fffcef 12%, #ecd194 40%, #d7f5f0 60%, #ffe4a6 82%);
-      filter: drop-shadow(0 0 20px #f0d89b70); }
-    .ultimate .crest { width: 226px; height: 250px; color: #f2dca2; opacity: .8; }
-    .ultimate .title { font-size: 38px; }
-    .ultimate .eyebrow { color: #d8efdf; }
-    .ultimate .diamond { background: #d6f4ea; box-shadow: 0 0 8px #b9eedc80; }
-    .ultimate .aura { background: radial-gradient(ellipse at 32% 50%, #dfbc713d, transparent 57%),
-      radial-gradient(ellipse at 76% 40%, #a0e5e02b, transparent 60%); animation-duration: 4200ms; }
-    .ultimate .rays { width: 760px; height: 760px; opacity: .85; animation-duration: 5600ms; }
-    .halo { position: absolute; left: 50%; top: 50%; width: 105%; height: 172%; border-radius: 50%;
-      border: 1px solid #ebce8b65; box-shadow: 0 0 14px #d8b4681f, inset 0 0 14px #d8b4681f;
-      transform: translate(-50%, -50%) rotate(-12deg); animation: orbit 4800ms ease-out both; }
-    .halo.second { width: 98%; height: 205%; border-color: #bdece55c;
-      transform: translate(-50%, -50%) rotate(13deg); animation-delay: 350ms; }
-    .ultimate .spark:nth-child(even), .ultimate .burst:nth-child(even) i {
-      background: #d3f8ef; box-shadow: 0 0 10px #a6e9de; }
-    @keyframes aura { 0% { opacity: 0; transform: scale(.6); }
-      28%, 78% { opacity: 1; } 100% { opacity: .4; transform: scale(1.15); } }
-    @keyframes radiance { 0% { opacity: 0; transform: translate(-50%, -50%) rotate(-10deg) scale(.5); }
-      20%, 75% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%, -50%) rotate(8deg) scale(1.08); } }
-    @keyframes drift { 0% { opacity: 0; transform: translate(0, 18px) rotate(0deg); }
-      15% { opacity: .9; } 100% { opacity: 0; transform: translate(var(--drift), -65px) rotate(120deg); } }
-    @keyframes firework { 0% { opacity: 0; transform: rotate(var(--angle)) translateY(8px) scale(.25); }
-      12% { opacity: 1; } 100% { opacity: 0; transform: rotate(var(--angle)) translateY(var(--reach)) scale(.4); } }
-    @keyframes orbit { 0% { opacity: 0; scale: .78; } 22%, 72% { opacity: 1; }
-      100% { opacity: 0; scale: 1.09; } }
-    @media (max-width: 480px) {
-      :host { inset: 17% 12px auto; }
-      .card { min-height: 138px; gap: 18px; padding: 24px 20px; }
-      .score { min-width: 110px; padding-right: 18px; } .number { font-size: 62px; }
-      .title { font-size: 23px; letter-spacing: 2px; }
-      .eyebrow { font-size: 8px; letter-spacing: 2px; }
-      .stage .card { min-height: 164px; padding: 24px 18px; gap: 18px; }
-      .stage .score { min-width: 145px; padding-right: 18px; }
-      .stage .number { font-size: 76px; letter-spacing: -4px; }
-      .stage .title { font-size: 25px; letter-spacing: 3px; }
-      .stage .eyebrow { font-size: 8px; letter-spacing: 2px; }
-      .stage .crest { left: calc(50% - 9px); width: 150px; height: 178px; }
-      .ultimate .card { min-height: 178px; }
-      .ultimate .number { font-size: 84px; }
-      .ultimate .crest { width: 162px; height: 190px; }
-      .rays, .ultimate .rays { width: 480px; height: 480px; }
-      .halo { width: 112%; height: 140%; }
-      .halo.second { width: 106%; height: 165%; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .card, .stage { animation-name: quiet; } .stage .card { animation: none; }
-      .spark, .glow, .effects { display: none; }
-      @keyframes quiet { 0%, 100% { opacity: 0; } 10%, 85% { opacity: 1; } }
-    }
+  const STYLE=`
+    :host{all:initial;position:fixed;z-index:2147482990;top:max(5.5rem,14%);left:50%;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 20px);pointer-events:none;color-scheme:dark}
+    *,*:before,*:after{box-sizing:border-box}
+    .stage{--accent:#d6c598;position:relative;display:grid;grid-template-columns:3px minmax(0,1fr);width:max-content;max-width:100%;overflow:hidden;border:1px solid #506052;border-radius:4px;background:linear-gradient(110deg,#1c3025f7,#141b17f7);box-shadow:0 5px 18px #0005;color:#eff1e7;animation:ribbon var(--duration) ease both}
+    .rail{background:var(--accent)}
+    .card{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:14px;padding:8px 18px 9px 14px;line-height:1.16}
+    .number{display:block;font-family:'Saira ExtraCondensed ExCond','Arial Narrow',system-ui,sans-serif;font-weight:600;font-variant-numeric:tabular-nums;font-size:38px;line-height:1;color:var(--accent)}
+    .words{min-width:0;border-inline-start:1px solid #627365;padding-inline-start:14px}
+    .eyebrow{display:block;margin-bottom:3px;font:600 11px/1.05 'Saira ExtraCondensed ExCond','Arial Narrow',system-ui,sans-serif;letter-spacing:.12em;color:var(--accent);white-space:nowrap}
+    .title{display:block;font:600 15px/1.35 system-ui,'Microsoft YaHei',sans-serif;white-space:nowrap}
+    .player{display:block;overflow:hidden;max-width:13em;margin-top:1px;color:#c1c9bd;font:12px/1.3 system-ui,sans-serif;text-overflow:ellipsis;white-space:nowrap}
+    .maximum,.ultimate{--accent:#eacb91;border-color:#99855b}
+    .maximum .number,.ultimate .number{font-size:46px}
+    .ultimate{--accent:#f7dfa2;border-color:#c0a669}
+    .maximum:after,.ultimate:after{content:'';position:absolute;inset:auto 0 0;height:2px;background:var(--accent);transform-origin:left;animation:elapsed var(--duration) linear both}
+    @keyframes ribbon{0%{opacity:0;transform:translateY(-5px)}9%,85%{opacity:1;transform:none}100%{opacity:0;transform:translateY(-3px)}}
+    @keyframes elapsed{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+    @media(max-width:500px),(max-height:490px){:host{top:max(56px,11%)}.card{gap:10px;padding:6px 12px 7px 10px}.words{padding-inline-start:10px}.number{font-size:32px}.maximum .number,.ultimate .number{font-size:36px}}
+    @media(prefers-reduced-motion:reduce){.stage,.stage:after{animation:none}}
   `;
-
-  function create({ document, window, host = document.body }) {
-    let overlay = null;
-    let timer = null;
-    let destroyed = false;
-
-    function clear() {
-      if (timer !== null) window.clearTimeout(timer);
-      timer = null;
-      if (overlay) overlay.remove();
-      overlay = null;
+  function create({document,window,host=document.body}){
+    let overlay=null,timer=null,destroyed=false;
+    function clear(){
+      if(timer!==null)window.clearTimeout(timer);
+      timer=null;if(overlay)overlay.remove();overlay=null;
     }
-
-    function show({ playerLabel, breakScore }) {
-      if (destroyed) return;
+    function show({playerLabel,breakScore}){
+      if(destroyed)return;
       clear();
-      const tierName = breakScore === 155 ? 'ultimate' : breakScore === 147 ? 'maximum' : 'century';
-      const tier = TIERS[tierName];
-      overlay = document.createElement('div');
-      overlay.dataset.pcolCelebration = tierName;
-      const shadow = overlay.attachShadow({ mode: 'open' });
-      const style = document.createElement('style');
-      style.textContent = STYLE;
-      const card = document.createElement('section');
-      card.className = 'card';
-      card.setAttribute('role', 'status');
-      card.setAttribute('aria-live', 'polite');
-      card.innerHTML = `<div class="glow" aria-hidden="true"></div>
-        <div class="score"><span class="number"></span><span class="score-label">单杆得分</span></div>
-        <div class="words"><div class="eyebrow"><span class="diamond" aria-hidden="true"></span>${tier.eyebrow}</div>
-          <div class="title">${tier.title}</div><div class="player"></div></div>`;
-      card.querySelector('.number').textContent = String(breakScore);
-      card.querySelector('.player').textContent = playerLabel;
-      for (let i = 0; i < tier.sparks; i++) {
-        const spark = document.createElement('i');
-        spark.className = 'spark';
-        spark.setAttribute('aria-hidden', 'true');
-        spark.style.cssText = tierName === 'century'
-          ? `--x:${9 + i * 9}%;--y:${20 + (i * 23) % 67}%;--delay:${160 + (i * 137) % 900}ms`
-          : `--x:${(i * 47) % 101}%;--y:${10 + (i * 31) % 92}%;--drift:${(i % 5 - 2) * 18}px;--delay:${250 + (i * 179) % (tier.duration - 3000)}ms`;
-        card.append(spark);
-      }
-      shadow.append(style);
-      if (tierName === 'century') shadow.append(card);
-      else {
-        const stage = document.createElement('div');
-        stage.className = `stage ${tierName}`;
-        stage.style.cssText = `--duration:${tier.duration}ms`;
-        const effects = document.createElement('div');
-        effects.className = 'effects';
-        effects.setAttribute('aria-hidden', 'true');
-        effects.innerHTML = `<div class="aura"></div><div class="rays"></div>${tierName === 'ultimate'
-          ? '<div class="halo"></div><div class="halo second"></div>' : ''}`;
-        const bursts = tierName === 'ultimate'
-          ? [[8, -12, 350], [92, -18, 1000], [24, -25, 2100], [76, 104, 2800]]
-          : [[12, -10, 600], [88, -10, 900]];
-        for (const [x, y, delay] of bursts) {
-          const burst = document.createElement('div');
-          burst.className = 'burst';
-          burst.style.cssText = `--x:${x}%;--y:${y}%;--delay:${delay}ms`;
-          for (let i = 0; i < 12; i++) {
-            const ray = document.createElement('i');
-            ray.style.cssText = `--angle:${i * 30}deg;--reach:${tierName === 'ultimate' ? 105 : 75}px`;
-            burst.append(ray);
-          }
-          effects.append(burst);
-        }
-        const crest = document.createElement('div');
-        crest.className = 'crest';
-        crest.setAttribute('aria-hidden', 'true');
-        const leaves = [[49, 53, -38], [38, 77, -52], [35, 102, -66], [42, 127, -78],
-          [56, 151, -92], [74, 171, -105]].map(([x, y, angle]) =>
-          `<ellipse cx="${x}" cy="${y}" rx="5" ry="12" transform="rotate(${angle} ${x} ${y})"/>`).join('');
-        crest.innerHTML = `<svg viewBox="0 0 200 220" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.3">
-          <path d="M95 193C45 170 18 105 51 38M105 193C155 170 182 105 149 38"/>
-          <path d="M83 23L78 10L92 17L100 5L108 17L122 10L117 23ZM83 28H117"/>
-          </g><g fill="currentColor">${leaves}<g transform="translate(200 0) scale(-1 1)">${leaves}</g></g>
-          <path d="M90 199L100 191L110 199L100 207Z" fill="currentColor"/></svg>`;
-        card.querySelector('.score').append(crest);
-        stage.append(effects, card);
-        shadow.append(stage);
-      }
-      host.append(overlay);
-      timer = window.setTimeout(clear, tier.duration);
+      const name=breakScore===155?'ultimate':breakScore===147?'maximum':'century',tier=tiers[name];
+      overlay=document.createElement('div');overlay.dataset.pcolCelebration=name;
+      const shadow=overlay.attachShadow({mode:'open'}),style=document.createElement('style');style.textContent=STYLE;
+      const stage=document.createElement('div');stage.className='stage '+name;stage.style.cssText='--duration:'+tier.duration+'ms';
+      const rail=document.createElement('i');rail.className='rail';rail.setAttribute('aria-hidden','true');
+      const card=document.createElement('section');card.className='card';card.setAttribute('role','status');card.setAttribute('aria-live','polite');card.setAttribute('aria-atomic','true');
+      card.innerHTML=`<strong class="number"></strong><div class="words"><span class="eyebrow" aria-hidden="true">${tier.label}</span><span class="title">${tier.title}</span><span class="player"></span></div>`;
+      card.querySelector('.number').textContent=String(breakScore);card.querySelector('.player').textContent=playerLabel;
+      stage.append(rail,card);shadow.append(style,stage);host.append(overlay);timer=window.setTimeout(clear,tier.duration);
     }
-
-    function destroy() {
-      clear();
-      destroyed = true;
-    }
-
-    return { show, clear, destroy };
+    return {show,clear,destroy(){clear();destroyed=true;}};
   }
-
-  return { create };
+  return {create};
 })();
-
 
 /* Constant-size frame counters, active turn timing and native result rows. */
 const PCOLFrameResult=(()=>{
@@ -930,18 +740,68 @@ const PCOLFrameResult=(()=>{
       analyzeStroke,
       snapshot:()=>breaks.map(b=>({...b}))};
   }
-  function render(box,players,breaks){
-    const row=(cells,label,values,title)=>{
+  // The original result box owns focus, retry/back and the responsive game UI layer.
+  // Only the score sheet and its award caption are styled here.
+  const sheetStyle=`
+    .game-box.pcol-scorecard{width:min(38rem,calc(100% - 24px));min-width:0;max-height:calc(100% - 16px);background:#101410f5;color:#eeeee7}
+    .pcol-scorecard>.box-head{padding:.65rem .8rem .5rem;text-align:center;font-size:clamp(24px,5.3vw,44px);line-height:1.08;white-space:nowrap}
+    .pcol-scorecard>.box-head.success-copy,.pcol-scorecard .pcol-winner{color:#61d893}
+    .pcol-scorecard>.box-head.error-copy{color:#e89c83}
+    .pcol-scorecard>.box-body{max-height:min(63dvh,32rem);min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+    .pcol-scorecard .duo-result-box{width:100%;box-sizing:border-box}
+    .pcol-scorecard .duo-result-box>.flex-section{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.24fr) minmax(0,1fr);align-items:center;padding:0 .8rem;gap:.25rem;text-align:center;font-variant-numeric:tabular-nums;border:0;background:transparent}
+    .pcol-scorecard .duo-result-box>.flex-section>*{width:auto;min-width:0;line-height:1.12}
+    .pcol-scorecard .duo-result-box>.flex-section>label{color:#a7afa7;font-size:1rem;letter-spacing:.025em}
+    .pcol-scorecard .duo-result-box>.flex-section>div{font-size:1.28rem;color:#f0f1e9}
+    .pcol-scorecard .duo-result-box>.pcol-names{height:2.4rem;background:#1f2722}
+    .pcol-scorecard .pcol-names>div{font-size:1.35rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .pcol-scorecard .pcol-names>:last-child{grid-column:3}
+    .pcol-scorecard .duo-result-box>.pcol-points{height:3rem;background:#1a211c;border-bottom:1px solid #495046}
+    .pcol-scorecard .duo-result-box>.pcol-points>div{font-size:2.15rem}
+    .pcol-scorecard .duo-result-box .pcol-winner{color:#61d893!important}
+    .pcol-scorecard .duo-result-box>.pcol-metric{height:1.85rem}
+    .pcol-scorecard .duo-result-box>.pcol-metric:nth-child(odd){background:#191e1a}
+    .pcol-scorecard .duo-result-box>.pcol-frame-time{display:flex;justify-content:center;align-items:baseline;gap:.75rem;height:auto;padding:.45rem .8rem;border-top:1px solid #343c34}
+    .pcol-scorecard .duo-result-box>.pcol-frame-time>div{font-size:1.15rem}
+    .pcol-scorecard .pcol-award{margin:0;padding:.45rem .8rem;color:#e7d3a5;background:#292a20;border:0;text-align:center;font:500 clamp(12px,1.65vw,15px)/1.5 system-ui,sans-serif;text-wrap:balance}
+    .pcol-scorecard .pcol-award[hidden]{display:none}
+    .pcol-scorecard>.box-foot{display:grid;grid-template-columns:repeat(2,minmax(0,8rem));justify-content:center;gap:.6rem;padding:.6rem 1rem}
+    .pcol-scorecard>.box-foot>button{min-width:0;min-height:2.25rem;white-space:nowrap;font-size:1.25rem;padding:.25rem .5rem}
+    .pcol-scorecard>.box-foot>button:focus-visible{outline:2px solid #e5c586;outline-offset:2px}
+    @media(max-width:500px){.pcol-scorecard .duo-result-box>.flex-section{padding-inline:.4rem}.pcol-scorecard .duo-result-box>.flex-section>label{font-size:.92rem}}
+    @media(pointer:coarse){.pcol-scorecard>.box-foot>button{min-height:44px}}
+    @media(max-height:440px){.game-box.pcol-scorecard{top:min(50%,50dvh)}.pcol-scorecard>.box-body{max-height:calc(100dvh - 150px)}.pcol-scorecard>.box-head{padding-block:.35rem}}
+  `;
+  function render(box,players,breaks,outcome){
+    const container=box._pts[0].closest('.duo-result-box'),sheet=box._head.parentElement,doc=sheet.ownerDocument;
+    if(!sheet.classList.contains('pcol-scorecard')){
+      sheet.classList.add('pcol-scorecard');
+      const style=doc.createElement('style');style.textContent=sheetStyle;sheet.append(style);
+      const note=doc.createElement('p');note.className='pcol-award';note.hidden=true;container.before(note);
+    }
+    if(outcome){
+      const {winner,reason,hotseat,human}=outcome;
+      const title=winner==null?'DRAW':hotseat?`PLAYER ${winner+1} WINS`:winner===human?'YOU WIN!':'YOU LOSE';
+      box.head(title);
+      box._head.className='box-head '+(winner==null?'bright-copy':hotseat||winner===human?'success-copy':'error-copy');
+      [...box._pts,...box._names].forEach((cell,index)=>{
+        cell.classList.remove('success-copy');cell.classList.toggle('pcol-winner',index%2===winner);
+      });
+      const note=sheet.querySelector('.pcol-award');
+      const caption={'three-miss':'同一原位三次空杆，警告后判负','black-lead':'仅余黑球，分差已达八分','excess-threshold':'超分结束','concession':'对手认输'}[reason];
+      note.textContent=reason==='concession'?(hotseat?`玩家 ${2-winner} 认输`:winner===human?'对手认输':'你已认输'):caption||'';
+      note.hidden=!note.textContent;
+    }
+    const row=(cells,label,values,title,kind='pcol-metric')=>{
       const section=cells[0].parentElement;
-      section.querySelector('label').textContent=label;
-      section.title=title;
+      section.classList.add(kind);section.querySelector('label').textContent=label;section.title=title;
       cells.forEach((cell,i)=>{cell.textContent=String(values[i]);});
     };
-    row(box._pts,'FRAME SCORE',players.map((p,i)=>p.pts-players[1-i].penalty),'本局比分，包含对手犯规送分');
-    row(box._brks,'HIGHEST BREAK',players.map(p=>p.maxbrk),'本局最高单杆');
-    row(box._fouls,'50s / 100s',breaks.map(b=>`${b.fifties} / ${b.centuries}`),'单杆 50–99 分次数 / 单杆至少 100 分次数；分别计数');
-    row(box._accuracies,'FOUL POINTS',players.map(p=>-p.penalty),'本局因犯规送给对手的分数，已包含在比分中');
-    const container=box._pts[0].closest('.duo-result-box');
+    box._names[0].parentElement.classList.add('pcol-names');
+    row(box._pts,'FRAME SCORE',players.map((p,i)=>p.pts-players[1-i].penalty),'本局比分','pcol-points');
+    row(box._brks,'HIGHEST BREAK',players.map(p=>p.maxbrk),'最高单杆');
+    row(box._fouls,'50s / 100s',breaks.map(b=>`${b.fifties} / ${b.centuries}`),'单杆 50–99 分 / 100 分及以上');
+    row(box._accuracies,'FOUL POINTS',players.map(p=>-p.penalty),'犯规送分');
     const extra=(key,label,values,title)=>{
       let section=container.querySelector('.'+key);
       if(!section){
@@ -949,17 +809,17 @@ const PCOLFrameResult=(()=>{
         for(const cell of section.querySelectorAll('div'))cell.className='label-div-150 bright-copy';
         container.insertBefore(section,box._timeValue.parentElement);
       }
-      row([...section.querySelectorAll('div')],label,values,title);
-      return [...section.querySelectorAll('div')];
+      row([...section.querySelectorAll('div')],label,values,title);return [...section.querySelectorAll('div')];
     };
-    extra('pcol-shot-time','AVG SHOT TIME',breaks.map(b=>b.timedShots?(b.thinkMs/b.timedShots/1000).toFixed(1)+'s':'—'),
-      '双方从可操作到实际出杆的平均时间；排除球运动、暂停、弹窗、后台和长时间停止更新');
+    extra('pcol-shot-time','AVG SHOT TIME',breaks.map(b=>b.timedShots?(b.thinkMs/b.timedShots/1000).toFixed(1)+'s':'—'),'平均出杆时间');
     const rate=(pots,attempts)=>attempts?(100*pots/attempts).toFixed(0)+'%':'—';
-    extra('pcol-pot-rate','LONG / POT*',breaks.map(b=>`${rate(b.longPots,b.longAttacks)} / ${rate(b.pots,b.attacks)}`),
-      '* 自动识别的直接进攻统计：长台 / 全部已识别进攻；合法打进目标球才算成功。防守、强侧旋和意图不明的杆不计入分母；长台按球路长度超过半张球台对角线划分。')
-      .forEach((cell,i)=>{const b=breaks[i];cell.title=`长台 ${b.longPots}/${b.longAttacks}；进攻 ${b.pots}/${b.attacks}；未纳入成功率 ${b.shots-b.attacks} 杆`;});
-    box._timeValue.parentElement.querySelector('label').textContent='FRAME TIME';
-    box._timeValue.parentElement.title='原作记录的本局用时';
+    for(const [key,label,attempts,pots,title] of [
+      ['pcol-pot-rate','POT SUCCESS','attacks','pots','进攻成功率'],['pcol-long-pot','LONG POTS','longAttacks','longPots','长台进攻成功率']
+    ]){
+      extra(key,label,breaks.map(b=>rate(b[pots],b[attempts])),title)
+        .forEach((cell,i)=>{cell.title=`${title} · ${breaks[i][pots]} / ${breaks[i][attempts]}`;});
+    }
+    const timeRow=box._timeValue.parentElement;timeRow.classList.add('pcol-frame-time');timeRow.querySelector('label').textContent='FRAME TIME';timeRow.title='本局用时';
   }
   return {create,render};
 })();
@@ -1011,24 +871,36 @@ const PCOLPractice = (() => {
     const root = document.createElement('aside');
     root.className = 'pe-palette-panel';
     root.setAttribute('aria-label', '自由摆球');
+    // A tool shelf: handle and disclosure stay available; the ball grid opens on demand.
     root.innerHTML = `
       <style>
-        .pe-palette-panel{position:fixed;right:14px;top:86px;width:104px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;overscroll-behavior:contain;z-index:1000;pointer-events:auto;box-sizing:border-box;padding:10px;border:1px solid #64726070;border-radius:15px;background:linear-gradient(150deg,#172b25f5,#0b1916f5);box-shadow:0 12px 38px #0007;color:#e7eee9;font:12px/1.4 "Segoe UI","Microsoft YaHei",sans-serif;scrollbar-width:thin;scrollbar-color:#526a59 transparent}
-        .pe-palette-panel[hidden]{display:none}.pe-palette-panel *{box-sizing:border-box}.pe-palette-panel button{font:inherit;cursor:pointer}.pe-palette-panel button:disabled{opacity:.38;cursor:default}.pe-palette-panel button:focus-visible{outline:2px solid #d7b778;outline-offset:2px}
-        .pe-heading{margin:0 0 8px;padding:5px 2px 7px;text-align:center;font-size:16px;font-weight:600;letter-spacing:.02em;cursor:grab;touch-action:none;user-select:none}.pe-heading:active{cursor:grabbing}.pe-ball-list{display:grid;gap:3px}.pe-ball-button{display:flex;justify-content:center;align-items:center;width:100%;height:36px;padding:3px;border:1px solid transparent;border-radius:9px;background:transparent;transition:background .12s,border-color .12s}.pe-ball-button:hover{background:#ffffff0b}.pe-ball-button[aria-pressed="true"]{background:#d0b17718;border-color:#d0b177}.pe-orb{display:block;width:27px;height:27px;flex-shrink:0;border-radius:50%;background:radial-gradient(circle at 30% 22%,#ffffffa8,transparent 36%),var(--ball);box-shadow:inset -4px -5px 7px #0007,inset 1px 1px 2px #ffffff55,0 3px 5px #0008}
-        .pe-controls{display:grid;grid-template-columns:1fr;gap:5px;margin-top:9px;padding-top:9px;border-top:1px solid #ffffff12}.pe-control{padding:7px 1px;color:#c3d2c8;border:1px solid #ffffff20;border-radius:7px;background:#ffffff05;font-size:10px!important;white-space:nowrap}.pe-control:hover:not(:disabled){background:#ffffff0c;border-color:#d0b17770}.pe-cancel{padding:6px 1px;border-color:transparent;background:transparent;color:#829c8c}
-        @media(max-height:590px){.pe-heading{margin-bottom:5px;padding-top:3px}.pe-ball-button{height:32px}.pe-orb{width:25px;height:25px}.pe-controls{margin-top:7px;padding-top:7px}}
-        @media(prefers-reduced-motion:reduce){.pe-ball-button{transition:none}}
+        .pe-palette-panel{position:fixed;inset:auto max(12px,env(safe-area-inset-right)) auto auto;top:clamp(72px,13dvh,112px);width:176px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 88px);overflow:auto;overscroll-behavior:contain;z-index:3;pointer-events:auto;box-sizing:border-box;border:1px solid var(--ui-line,#415147);border-radius:5px;background:var(--ui-bg,#101913);box-shadow:0 6px 18px #0005;color:var(--ui-text,#f0f0e7);font:13px/1.35 var(--ui-font,system-ui,sans-serif);scrollbar-width:thin}
+        .pe-palette-panel[hidden],.pe-palette-panel [hidden]{display:none!important}.pe-palette-panel *{box-sizing:border-box}
+        .pe-palette-panel button{font:inherit;cursor:pointer;white-space:nowrap}.pe-palette-panel button:disabled{opacity:.42;cursor:default}.pe-palette-panel button:focus-visible{outline:2px solid var(--ui-accent,#dfc58a);outline-offset:-3px}
+        .pe-strip{display:grid;grid-template-columns:1fr 38px;align-items:stretch}.pe-heading{display:flex;gap:8px;align-items:center;margin:0;padding:0 0 0 12px;min-height:40px;text-align:start;font-size:15px;font-weight:600;cursor:grab;touch-action:none;user-select:none;white-space:nowrap}.pe-heading:before{content:'';width:4px;height:12px;border-inline:1px solid var(--ui-muted,#9caa9d)}.pe-heading:active{cursor:grabbing}
+        .pe-palette-panel .pe-disclosure{display:grid;place-items:center;border:0;background:transparent;color:var(--ui-muted,#afb9ac);padding:0;min-height:40px}.pe-disclosure:after{content:'';border:solid currentColor;border-width:0 1.5px 1.5px 0;width:7px;height:7px;transform:rotate(225deg)}.pe-disclosure[aria-expanded="false"]:after{transform:rotate(45deg)}
+        .pe-palette-panel[data-folded="true"]{width:112px}.pe-body{padding:0 8px 8px;border-top:1px solid var(--ui-line,#415147)}.pe-caption{display:flex;justify-content:space-between;gap:8px;align-items:baseline;min-height:24px;padding:6px 2px 3px;color:var(--ui-muted,#bdc7b9);font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}.pe-caption strong{color:var(--ui-accent,#e2c98c);font-weight:600}
+        .pe-ball-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:3px}.pe-ball-button{display:flex;justify-content:flex-start;gap:6px;align-items:center;width:100%;min-height:36px;padding:4px 8px;border:1px solid transparent;border-radius:3px;color:inherit;background:var(--ui-surface,#213128);text-align:start}
+        .pe-ball-button:hover,.pe-control:hover:not(:disabled){background:var(--ui-raised,#314238)}.pe-ball-button[aria-pressed="true"]{border-color:var(--ui-accent,#dfc58a);color:var(--ui-accent,#dfc58a)}.pe-orb{display:block;width:17px;aspect-ratio:1;flex:none;border-radius:50%;border:1px solid #ffffff30;background:radial-gradient(circle at 32% 27%,#ffffff8c,transparent 38%),var(--ball);box-shadow:inset -2px -3px 3px #0005}
+        .pe-controls{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;padding-top:6px;border-top:1px solid var(--ui-line,#415147)}.pe-palette-panel .pe-control{min-height:34px;padding:4px;border:1px solid var(--ui-line,#415147);border-radius:3px;color:var(--ui-text,#eff1e7);background:transparent;font-size:12px}
+        .pe-palette-panel .pe-cancel{grid-column:1/-1;min-height:30px;color:var(--ui-muted,#b9c4ba);border:0}
+        @media(pointer:coarse){.pe-ball-button,.pe-palette-panel .pe-control,.pe-heading,.pe-palette-panel .pe-disclosure{min-height:44px}.pe-strip{grid-template-columns:1fr 44px}.pe-palette-panel[data-folded="true"]{width:116px}}
+        @media(max-width:520px),(max-height:490px){.pe-palette-panel{width:218px;top:max(52px,9dvh);max-height:calc(100dvh - 68px)}.pe-ball-list{grid-template-columns:repeat(4,minmax(0,1fr))}.pe-ball-button{flex-direction:column;gap:2px;justify-content:center;min-height:44px;padding:4px 2px;font-size:11px}}
       </style>
-      <h2 class="pe-heading">自由摆球</h2>
-      <div class="pe-ball-list"></div>
-      <div class="pe-controls">
-        <button type="button" class="pe-control pe-clear">清空目标球</button>
-        <button type="button" class="pe-control pe-standard">标准球形</button>
-        <button type="button" class="pe-control pe-cancel">取消本次编辑</button>
+      <div class="pe-strip"><h2 class="pe-heading" title="拖动摆球工具">摆球</h2><button type="button" class="pe-disclosure" aria-label="收起摆球工具" aria-controls="pcol-practice-tools" aria-expanded="true"></button></div>
+      <div class="pe-body" id="pcol-practice-tools"><div class="pe-caption"><strong class="pe-selected">选择球</strong><span class="pe-red-count"></span></div>
+        <div class="pe-ball-list" role="group" aria-label="选择摆放球"></div>
+        <div class="pe-controls"><button type="button" class="pe-control pe-standard">标准球形</button><button type="button" class="pe-control pe-clear">清空目标球</button><button type="button" class="pe-control pe-cancel" hidden>取消本次摆球</button></div>
       </div>`;
     const $ = selector => root.querySelector(selector);
-    const heading = $('.pe-heading');
+    const heading = $('.pe-heading'),toggle=$('.pe-disclosure'),body=$('.pe-body');
+    const compact=window.matchMedia('(max-width:520px), (max-height:490px)').matches;
+    function fold(value){
+      root.dataset.folded=String(value);body.hidden=value;
+      toggle.setAttribute('aria-expanded',String(!value));toggle.setAttribute('aria-label',(value?'展开':'收起')+'摆球工具');
+    }
+    fold(compact);
+    toggle.addEventListener('click',()=>{fold(!body.hidden);clamp();});
     const buttons = [];
     for (let n = 0; n <= 7; n++) {
       const button = document.createElement('button');
@@ -1036,7 +908,7 @@ const PCOLPractice = (() => {
       button.className = 'pe-ball-button';
       button.setAttribute('aria-label', `选择${NAMES[n]}`);
       button.title = NAMES[n];
-      button.innerHTML = `<span class="pe-orb" style="--ball:${COLOURS[n]}" aria-hidden="true"></span>`;
+      button.innerHTML = `<span class="pe-orb" style="--ball:${COLOURS[n]}" aria-hidden="true"></span><span>${NAMES[n]}</span>`;
       button.addEventListener('click', () => onSelect(n));
       $('.pe-ball-list').append(button);
       buttons.push(button);
@@ -1075,8 +947,9 @@ const PCOLPractice = (() => {
       root.style.right = 'auto';
     }
     function clamp() {
+      if(!position)return; // The default shelf follows its CSS edge on resize or disclosure.
       const rect = root.getBoundingClientRect();
-      place(position ? position.x : rect.left, position ? position.y : rect.top);
+      if(rect.width&&rect.height)place(position.x,position.y);
     }
     function finishDrag() {
       if (!drag) return;
@@ -1102,15 +975,17 @@ const PCOLPractice = (() => {
       root.style.top = '';
       root.style.right = '';
       savePosition();
-      clamp();
     });
     window.addEventListener('resize', clamp);
     function update(current, selectedIndex, editing = false) {
       const selected = current.find(b => b.i === selectedIndex);
       buttons.forEach((button, n) => button.setAttribute('aria-pressed', String(selected?.n === n)));
-      buttons[1].title = `红球 · 已放 ${current.filter(b => b.n === 1 && b.active).length} / 15`;
+      const reds=current.filter(b=>b.n===1&&b.active).length;
+      $('.pe-red-count').textContent=`台上红球 ${reds}/15`;
+      $('.pe-selected').textContent=editing&&selected?'摆放'+NAMES[selected.n]:'选择球';
+      buttons[1].title = `红球 · 已放 ${reds} / 15`;
       $('.pe-clear').disabled = !current.some(b => b.n !== 0 && b.active);
-      $('.pe-cancel').disabled = !editing;
+      $('.pe-cancel').hidden = !editing;
     }
     function setVisible(visible) {
       if (!visible) finishDrag();
@@ -1131,6 +1006,233 @@ const PCOLPractice = (() => {
     };
   }
   return { placementError, createEditor };
+})();
+
+/* Shared primitives for the userscript's shadow surfaces. The native canvas and menus
+ * keep their own stylesheet. English display type reuses the game's loaded face. */
+const PCOLUIStyle = `
+  :host {
+    --ui-bg:#111816; --ui-surface:#1b2320; --ui-raised:#27322d;
+    --ui-text:#f1efe6; --ui-muted:#b9c1b9; --ui-line:#46554b;
+    --ui-accent:#ddc691; --ui-green:#a3d6ba; --ui-warning:#ebc58d; --ui-danger:#f1aaa2;
+    --ui-font:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    --ui-display:"Saira ExtraCondensed ExCond","Arial Narrow",var(--ui-font);
+    --ui-pad:clamp(16px,3vw,28px); --ui-hit:36px;
+    font:500 14px/1.5 var(--ui-font); color:var(--ui-text); color-scheme:dark;
+    font-variant-numeric:tabular-nums; text-align:start; letter-spacing:normal;
+  }
+  *,*::before,*::after{box-sizing:border-box}
+  [hidden]{display:none!important}
+  button,a{touch-action:manipulation}
+  button{appearance:none;font:inherit;color:var(--ui-text);cursor:pointer;
+    min-block-size:var(--ui-hit);padding:7px 12px;border:1px solid var(--ui-line);
+    border-radius:3px;background:var(--ui-surface);text-align:center;
+    text-wrap:balance;line-height:1.35}
+  @media(hover:hover){button:enabled:hover{background:var(--ui-raised);border-color:var(--ui-muted)}}
+  button:focus-visible,a:focus-visible,summary:focus-visible{
+    outline:2px solid var(--ui-accent);outline-offset:2px}
+  button.primary{background:var(--ui-accent);border-color:var(--ui-accent);color:#172019;font-weight:700}
+  @media(hover:hover){button.primary:enabled:hover{background:#ead9b2;border-color:#ead9b2}}
+  button:disabled{opacity:.48;cursor:default}
+  h2,h3,p,dl,dd{margin:0}
+  h2,h3,dt,dd{line-break:strict;text-wrap:balance}
+  p{line-break:strict;text-wrap:pretty}
+  a{color:var(--ui-accent);text-underline-offset:.2em}
+  @media(pointer:coarse){:host{--ui-hit:44px}}
+`;
+
+/* The table owns the screen. This rail shows the turn, its rulings and only the actions relevant now. */
+const PCOLTableHUD=(()=>{
+  const style=`
+    :host{--hud-gutter:clamp(8px,1.4vw,18px);--hud-width:min(360px,calc(100vw - 2 * var(--hud-gutter)));
+      position:fixed;left:max(var(--hud-gutter),env(safe-area-inset-left));bottom:max(var(--hud-gutter),env(safe-area-inset-bottom));
+      z-index:2147483000;max-width:var(--hud-width)}
+    .bar{position:relative;width:max-content;max-width:var(--hud-width);color:var(--ui-text);background:var(--ui-bg);
+      border:1px solid var(--ui-line);border-inline-start:3px solid var(--ui-green);border-radius:4px;box-shadow:0 3px 14px #0005;
+      overflow:auto;max-height:calc(100dvh - 2 * var(--hud-gutter));overscroll-behavior:contain;scrollbar-width:thin}
+    .bar[data-foul=true]:not([data-folded=true]){width:var(--hud-width)}
+    .bar:has(~.modal:not(:empty)),.practice-controls:has(~.modal:not(:empty)){display:none}
+    .bar[data-foul=true],.bar[data-warn=true]{border-inline-start-color:var(--ui-warning)}
+    .hud-head{display:flex;align-items:center;gap:8px;padding:3px 5px 3px 4px;min-height:44px}
+    .drag{width:14px;flex:none;align-self:stretch;cursor:grab;touch-action:none;display:grid;place-items:center;opacity:.65}
+    .drag::before{content:'';width:6px;height:16px;background:radial-gradient(circle,var(--ui-muted) 1px,transparent 1.3px) center / 3px 4px}
+    .hud-copy{display:grid;align-content:center;gap:1px;min-width:0;flex:auto;line-height:1.2;cursor:grab;touch-action:none;user-select:none}
+    .hud-head:has(.hud-copy:active) .drag,.hud-copy:active{cursor:grabbing}
+    .hud-phase{color:var(--ui-green);font:700 13px/1.1 var(--ui-display);letter-spacing:.065em;white-space:nowrap}
+    .bar[data-foul=true] .hud-phase,.bar[data-warn=true] .hud-phase{color:var(--ui-warning)}
+    .bar[data-foul=true] .hud-phase,.bar[data-warn=true] .hud-phase{font-size:18px;line-height:1}
+    .bar[data-mode=home] .hud-copy{gap:0}
+    .hud-subject{display:flex;align-items:center;gap:6px;min-width:0}
+    .status{font:650 15px/1.35 var(--ui-font);text-wrap:balance;word-break:normal;overflow-wrap:break-word}
+    .hud-ball{width:9px;height:9px;flex:none;border-radius:50%;box-shadow:inset 0 0 0 1px #fff5}
+    .hud-main,.hud-tools{display:flex;align-items:center;gap:3px}
+    .bar button{margin:0;border:1px solid transparent;background:transparent;color:var(--ui-text);border-radius:3px;
+      padding:0 8px;min-height:var(--ui-hit);font:600 13px/1.25 var(--ui-font);text-align:center;white-space:nowrap;cursor:pointer}
+    .bar button:hover,.bar button[aria-expanded=true],.bar button:focus-visible{background:var(--ui-raised)}
+    .bar button:focus-visible{outline:2px solid var(--ui-accent);outline-offset:-2px}
+    .bar button:disabled{opacity:.4;cursor:default}
+    .bar .ai,.bar .choose{color:var(--ui-accent)}
+    .hud-main:not([hidden]){margin-inline-start:2px}
+    .bar .hud-more{width:var(--ui-hit);padding:0;position:relative;flex:none;display:grid;place-items:center}
+    .hud-more::before{content:'';width:16px;height:4px;background:radial-gradient(circle,currentColor 1.4px,transparent 1.7px) center / 5.4px 4px repeat-x}
+    .bar .foul-toggle{color:var(--ui-warning);display:flex;align-items:center;gap:6px}
+    .foul-toggle::after{content:'';width:6px;height:6px;border:solid currentColor;border-width:0 1.5px 1.5px 0;transform:translateY(-2px) rotate(45deg)}
+    .foul-toggle[aria-expanded=true]::after{transform:translateY(2px) rotate(225deg)}
+    .hud-tools{border-top:1px solid var(--ui-line);padding:3px;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr)}
+    .hud-tools .concede{color:var(--ui-danger)}
+    .hud-signals{margin:0 8px;padding:6px 0 8px;display:grid;gap:5px}
+    .hud-signals>div{display:flex;flex-wrap:wrap;gap:3px 8px;align-items:center}
+    .touch-tag,.free-tag{padding:2px 6px;display:inline-flex;align-items:center;min-height:24px;
+      font:800 20px/1 var(--ui-display);letter-spacing:.035em;white-space:nowrap;border-radius:2px}
+    .touch-tag{color:#191813;background:var(--ui-warning)}.free-tag{color:#10241b;background:var(--ui-green)}
+    .touch-detail,.free-detail{font:550 13px/1.4 var(--ui-font);color:var(--ui-text);text-wrap:balance}
+    .foul-options{border-top:1px solid var(--ui-line);padding:8px;background:var(--ui-surface)}
+    .foul-options .foul-cause{margin:0 0 7px;color:var(--ui-muted);font:500 12px/1.5 var(--ui-font);text-wrap:balance}
+    .foul-options .foul-cause span{display:inline-block}
+    .foul-options .foul-cause span+span::before{content:' · ';white-space:pre}
+    .foul-options .choices{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:5px;margin:0}
+    .foul-options .choices button{display:grid;place-content:center;justify-items:center;gap:4px;
+      padding:8px 2px;min-height:48px;border:1px solid var(--ui-line);background:var(--ui-bg)}
+    .foul-options .choices button:hover,.foul-options .choices button:focus-visible{background:var(--ui-raised);border-color:var(--ui-muted)}
+    .foul-options .choices button:first-child{color:var(--ui-accent);border-color:var(--ui-accent)}
+    .foul-options strong{font:700 14px/1.15 var(--ui-font);white-space:nowrap}
+    .foul-options small{font:500 11px/1.3 var(--ui-font);color:var(--ui-muted);white-space:nowrap}
+    .foul-notice{padding-top:8px;color:var(--ui-warning);font:500 12px/1.5 var(--ui-font);text-wrap:balance}
+    @media(max-width:460px){.bar{--hud-width:min(340px,calc(100vw - 2 * var(--hud-gutter)))}.hud-head{gap:4px}.bar button{padding-inline:6px}.drag{width:10px}}
+    @media(max-width:330px){.hud-head{flex-wrap:wrap}.hud-main{justify-content:center}.hud-copy{min-width:80px}.foul-options .choices{gap:3px}.foul-options small{font-size:10px}}
+    @media(pointer:coarse){.bar button{min-height:max(44px,var(--ui-hit))}.bar .hud-more{width:max(44px,var(--ui-hit))}.drag{width:14px}}
+  `;
+  function create(document,shadow){
+    const ui={};
+    function add(tag,key,parent,label=''){
+      const el=document.createElement(tag);el.className=key;if(tag==='button')el.type='button';
+      if(label)el.textContent=label;parent.append(el);ui[key]=el;return el;
+    }
+    const bar=add('section','bar',shadow);bar.setAttribute('aria-label','球台控制');
+    const head=add('div','hud-head',bar),grip=add('span','drag',head),copy=add('div','hud-copy',head);
+    grip.title=copy.title='拖动，双击归位';grip.setAttribute('aria-hidden','true');
+    add('span','hud-phase',copy);const subject=add('div','hud-subject',copy);
+    const ball=add('span','hud-ball',subject);ball.setAttribute('aria-hidden','true');add('span','status',subject);
+    const main=add('div','hud-main',head);
+    add('button','ai',main,'与 AI 对局');add('button','hotseat',main,'双人对局');
+    add('button','retry',main,'复位重打');add('button','choose',main,'选球');
+    const fold=add('button','foul-toggle',main,'方案');fold.setAttribute('aria-controls','table-foul-choices');
+    const more=add('button','hud-more',head);more.setAttribute('aria-label','更多操作');more.title='更多操作';more.setAttribute('aria-controls','table-tools');
+    const signals=add('div','hud-signals',bar);
+    const touching=add('div','touch-rule',signals),free=add('div','free-rule',signals);
+    add('span','touch-tag',touching,'TOUCHING BALL');add('span','touch-detail',touching);
+    add('span','free-tag',free,'FREE BALL');add('span','free-detail',free);
+    const foul=add('section','foul-options',bar);foul.id='table-foul-choices';foul.setAttribute('aria-label','犯规方案');
+    const tools=add('div','hud-tools',bar);tools.id='table-tools';tools.setAttribute('aria-label','更多操作');
+    add('button','practice',tools,'练球');add('button','opponent-settings',tools,'对手设置');add('button','profile',tools,'玩家画像');add('button','concede',tools,'认输本局');
+    add('div','practice-controls',shadow);add('div','modal',shadow);
+    return ui;
+  }
+  return {create,style};
+})();
+
+/* Surfaces that require a decision. The table itself owns the non-modal HUD. */
+const PCOLDialogUI=(()=>{
+  const style=`
+.veil{position:fixed;inset:0;z-index:5;display:grid;place-items:center;overscroll-behavior:contain;pointer-events:auto;background:rgb(5 10 8 / 67%);padding:12px;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
+.panel{--dialog-gap:10px;position:relative;box-sizing:border-box;width:min(100%,28rem);max-height:100%;max-block-size:calc(100dvh - max(12px,env(safe-area-inset-top)) - max(12px,env(safe-area-inset-bottom)));overflow:auto;overscroll-behavior:contain;padding:clamp(20px,3.4vw,32px);color:var(--ui-text,#f1f0e8);background:var(--ui-surface,#18201b);border:1px solid var(--ui-line,#47524a);border-top:2px solid var(--ui-accent,#d0bd8e);border-radius:5px;box-shadow:0 16px 64px #0007;text-align:center;font:400 15px/1.55 var(--ui-font,system-ui,sans-serif)}
+.panel[data-kind="profile"],.panel[data-kind="difficulty"]{width:min(100%,32rem)}
+.panel[data-tone="warning"]{border-top-color:var(--ui-warning,#efb675)}
+.dialog-head{display:grid;gap:5px;justify-items:center}
+.dialog-kicker{margin:0;color:var(--ui-accent,#d7c695);font:700 12px/1.25 var(--ui-display,"Arial Narrow",sans-serif);letter-spacing:.16em;text-transform:uppercase}
+.panel[data-tone="warning"] .dialog-kicker{color:var(--ui-warning,#efb675)}
+.panel h2{margin:0;max-width:100%;font:650 clamp(22px,3.4vw,29px)/1.2 var(--ui-font,system-ui,sans-serif);letter-spacing:.01em;text-wrap:balance;overflow-wrap:anywhere}
+.panel[data-kind="free-ball"] h2,.panel[data-kind="touching"] h2,.panel[data-kind="free-verdict"] h2{color:var(--ui-accent,#d7c695);font:800 clamp(30px,5.5vw,40px)/1.05 var(--ui-display,"Arial Narrow",sans-serif);letter-spacing:.015em}
+.panel[data-dismissible] .dialog-head{padding-inline:24px}
+.panel .dialog-lead{margin:12px auto 0;max-width:32em;color:var(--ui-muted,#bdc7bf);line-height:1.55;text-wrap:balance;overflow-wrap:anywhere}
+.panel .dialog-body:empty,.panel .choices:empty,.panel [hidden]{display:none!important}
+.panel .choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--dialog-gap);align-items:stretch;margin:22px auto 0}
+.panel .choices[data-layout="single"]{display:flex;justify-content:center}
+.panel button,.panel a.dialog-save,.panel summary{font:inherit;touch-action:manipulation}
+.panel .choices button,.panel .dialog-save,.panel .difficulty-option,.panel .sync-switch{display:flex;align-items:center;justify-content:center;gap:8px;min-width:0;min-height:var(--ui-hit,44px);padding:8px 14px;border:1px solid var(--ui-line,#49544b);border-radius:3px;color:var(--ui-text,#f1f0e8);background:var(--ui-raised,#29332d);line-height:1.3;font-size:14px;font-weight:600;text-align:center;cursor:pointer;text-wrap:balance;overflow-wrap:anywhere}
+.panel .choices[data-layout="single"] button,.panel .dialog-save{min-width:min(100%,11rem)}
+.panel .choices .primary,.panel .dialog-save{color:#192018;background:var(--ui-accent,#d7c695);border-color:transparent}
+.panel button:disabled{opacity:.55;cursor:wait}
+.panel :is(button,a,summary):focus-visible{outline:2px solid var(--ui-accent,#d7c695);outline-offset:3px}
+@media(hover:hover){.panel .choices button:hover,.panel .difficulty-option:hover,.panel .sync-switch:hover{border-color:var(--ui-muted,#b4bdb6)}.panel .choices .primary:hover,.panel .dialog-save:hover{filter:brightness(1.07)}}
+.panel .dismiss-dialog{position:absolute;right:8px;top:8px;display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;background:transparent;color:var(--ui-muted,#bdc7bf);font:400 25px/1 sans-serif;border-radius:3px;cursor:pointer}
+.panel .dialog-facts{display:grid;grid-template-columns:repeat(var(--fact-cols,3),minmax(0,1fr));gap:1px;margin:18px 0 0;padding:0;background:var(--ui-line,#47524a);border:1px solid var(--ui-line,#47524a)}
+.dialog-facts>div{display:grid;align-content:center;gap:6px;min-width:0;padding:10px 5px;background:var(--ui-bg,#111913)}
+.dialog-facts dt{margin:0;color:var(--ui-muted,#bdc7bf);font-size:12px;font-weight:500}
+.dialog-facts dd{margin:0;color:var(--ui-text,#f1f0e8);font-size:16px;font-weight:700;line-height:1.25;font-variant-numeric:tabular-nums;text-wrap:balance;overflow-wrap:anywhere}
+.panel .choices[data-layout="balls"]{display:flex;justify-content:center;flex-wrap:wrap}
+.panel .choices[data-layout="balls"] [data-ball]{flex:0 1 calc((100% - (var(--ball-cols,3) - 1)*var(--dialog-gap))/var(--ball-cols,3));padding-inline:3px;white-space:nowrap}
+.panel [data-ball]::before{content:"";flex:none;width:17px;height:17px;border:1px solid #ffffff48;border-radius:50%;background:radial-gradient(circle at 32% 24%,#ffffff73,transparent 38%),var(--ball);box-shadow:inset -2px -3px 4px #0005}
+.panel [data-ball="1"]{--ball:#c9534c}.panel [data-ball="2"]{--ball:#eac04f}.panel [data-ball="3"]{--ball:#318864}.panel [data-ball="4"]{--ball:#9c6949}.panel [data-ball="5"]{--ball:#4784c0}.panel [data-ball="6"]{--ball:#de9ba8}.panel [data-ball="7"]{--ball:#202222}
+.panel .choices[data-layout="balls"] [data-role="alternative"]{flex:1 0 100%;background:transparent;border-color:transparent;color:var(--ui-muted,#bdc7bf)}
+.panel .choices[data-layout="tiles"] button{display:grid;align-content:center;justify-items:center;gap:5px;min-height:88px}
+.panel button small{display:block;color:var(--ui-muted,#bdc7bf);font-size:12px;font-weight:400;text-wrap:balance}
+.panel .difficulty-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin:20px 0 0}
+.panel .difficulty-option{flex-direction:column;gap:4px;min-height:72px;padding-inline:4px}
+.panel .difficulty-option[aria-pressed="true"],.panel .choices [data-ball][aria-pressed="true"]{border-color:var(--ui-accent,#d7c695);background:color-mix(in srgb,var(--ui-accent,#d7c695) 12%,var(--ui-raised,#29332d));color:var(--ui-accent,#d7c695);box-shadow:inset 0 -2px var(--ui-accent,#d7c695)}
+.panel .dialog-fold{margin:16px 0 0;border-top:1px solid var(--ui-line,#47524a);text-align:left}
+.panel .dialog-fold+.dialog-fold{margin-top:0}
+.panel .dialog-fold[open]{padding-bottom:8px}
+.panel .dialog-fold .dialog-facts{margin:0;text-align:center}
+.panel .dialog-fold summary{padding:9px 2px;color:var(--ui-muted,#bdc7bf);font-size:13px;font-weight:600;line-height:1.5;cursor:pointer}
+.panel .dialog-fold summary:focus-visible{outline-offset:-2px}
+.panel .dialog-fold p,.panel .dialog-status{margin:8px 0 0;color:var(--ui-muted,#bdc7bf);font-size:13px;line-height:1.5;text-wrap:balance;overflow-wrap:anywhere}
+.panel .sync-switch{width:100%;justify-content:space-between;margin:6px 0;min-height:40px;font-size:13px}
+.panel .dialog-save{margin:0 auto;text-decoration:none}
+.panel .dialog-status:empty{display:none}.panel .dialog-status[data-error="true"]{color:var(--ui-warning,#efb675)}
+.panel[data-busy="true"]{border-top-style:dashed}
+@media(max-height:440px){.veil{padding-block:6px}.panel{padding-block:14px;max-block-size:calc(100dvh - 12px)}.panel .choices,.panel .difficulty-options{margin-top:14px}.panel .dialog-facts{margin-top:12px}}
+@media(max-width:360px){.panel{--dialog-gap:6px;padding-inline:16px}.panel .choices button{padding-inline:6px}.panel .choices[data-layout="tiles"]{grid-template-columns:1fr}.panel .choices[data-layout="tiles"] button{min-height:62px}}
+@media(pointer:coarse){.panel button,.panel summary,.panel .dialog-save{min-height:44px}.panel .dismiss-dialog{width:44px;height:44px}}
+`;
+  function make(doc,tag,cls,text){const node=doc.createElement(tag);if(cls)node.className=cls;if(text!=null)node.textContent=String(text);return node;}
+  function facts(doc,items){
+    const dl=make(doc,'dl','dialog-facts');dl.style.cssText='--fact-cols:'+items.length;
+    for(const [label,value] of items){const cell=make(doc,'div');cell.append(make(doc,'dt',null,label),make(doc,'dd',null,value));dl.append(cell);}
+    return dl;
+  }
+  function details(doc,label){
+    const el=make(doc,'details','dialog-fold');el.append(make(doc,'summary',null,label));return el;
+  }
+  function open(doc,{kind='ruling',kicker,title,message='',choices=[],layout,tone,stats,close,busy=false}){
+    const veil=make(doc,'div','veil'),panel=make(doc,'section','panel'),head=make(doc,'header','dialog-head');
+    panel.setAttribute('role',kind==='miss-warning'?'alertdialog':'dialog');panel.setAttribute('aria-modal','true');panel.setAttribute('aria-label',title);
+    panel.setAttribute('data-kind',kind);if(tone)panel.setAttribute('data-tone',tone);if(busy)panel.setAttribute('data-busy','true');
+    if(kicker)head.append(make(doc,'div','dialog-kicker',kicker));
+    const heading=make(doc,'h2',null,title);heading.tabIndex=-1;head.append(heading);panel.append(head);
+    if(message)panel.append(make(doc,'p','dialog-lead',message));
+    const body=make(doc,'div','dialog-body');if(stats?.length)body.append(facts(doc,stats));panel.append(body);
+    const actions=make(doc,'div','choices');actions.setAttribute('data-layout',layout||(choices.length>1?'pair':'single'));
+    const balls=choices.filter(c=>c[3]?.ball).length;
+    if(balls)actions.style.cssText='--ball-cols:'+(balls<=4&&balls!==3?2:3);
+    for(const [label,action,primary,config={}] of choices){
+      const b=make(doc,'button',primary?'primary':null,config.detail?null:label);b.type='button';
+      if(config.detail)b.append(make(doc,'strong',null,label),make(doc,'small',null,config.detail));
+      if(config.ball)b.setAttribute('data-ball',String(config.ball));
+      if(config.selected!=null)b.setAttribute('aria-pressed',String(config.selected));
+      if(config.role)b.setAttribute('data-role',config.role);
+      b.onclick=action;actions.append(b);
+    }
+    panel.append(actions);
+    if(close){
+      panel.setAttribute('data-dismissible','');const x=make(doc,'button','dismiss-dialog','×');x.type='button';x.setAttribute('aria-label','关闭');x.onclick=close;panel.append(x);
+    }
+    // Prevent game shortcuts from firing while a formal decision owns keyboard focus.
+    panel.addEventListener('keydown',e=>{
+      e.stopPropagation();
+      if(e.key==='Escape'&&close){e.preventDefault();close();return;}
+      if(e.key!=='Tab')return;
+      const items=[...panel.querySelectorAll('button:not(:disabled),a[href],summary')].filter(el=>el.getClientRects().length);
+      const active=panel.getRootNode().activeElement,first=items[0],last=items.at(-1);
+      if(!first){e.preventDefault();heading.focus();return;}
+      if((e.shiftKey&&(active===first||!items.includes(active)))||(!e.shiftKey&&(active===last||!items.includes(active)))){
+        e.preventDefault();(e.shiftKey?last:first).focus();
+      }
+    });
+    panel.addEventListener('keyup',e=>e.stopPropagation());
+    veil.append(panel);return {veil,panel,heading,body,actions};
+  }
+  return {style,open,make,facts,details};
 })();
 
 /* Compile a native stroke without touching the live controller or physics world. */
@@ -4035,9 +4137,9 @@ const PCOLLocalOpponent = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.23.0";
+  const VERSION = "0.24.0";
   const DEVELOPMENT = false;
-  const BUILD_ID = "44971a43c467";
+  const BUILD_ID = "c217aa7ec2f3";
   const LOCAL_SYNC_KEY='pcol-local-sync';
   if (window.PCOLPatch?.version === VERSION) return;
   const COLOURS = ['白球', '红球', '黄球', '绿球', '棕球', '蓝球', '粉球', '黑球'];
@@ -4155,29 +4257,23 @@ const PCOLLocalOpponent = (() => {
     s.touchingCache={evolution,ballOn:ctx.ballOn,colour:s.nominatedColour,freeBall:s.freeBallNominee,value};return value;
   }
   function touchingNotice(s) {
-    if (s.conceded || s.g._model._gState !== 4 || !s.g._model._gContext.ballOn || s.g._model._gContext.ballOn === 65535) return '';
+    if(s.conceded||s.g._model._gState!==4||!s.g._model._gContext.ballOn||s.g._model._gContext.ballOn===65535)return '';
     const info=currentTouching(s);
-    if (!info.indices.length) return '';
+    if(!info.indices.length)return '';
     const names=[...new Set(info.indices.map(i=>COLOURS[s.g._simulator.getBallAtIndex(i).number]))].join('、');
-    if (info.requiresColourDeclaration && s.nominationSource !== 'manual') return `贴球：${names} · 须明确指定彩球`;
-    return `贴球：${names} · ${info.deemedHit ? '合法打离即视为已碰目标' : '打离后仍须先碰目标'}`;
+    return names+' · '+(info.requiresColourDeclaration&&s.nominationSource!=='manual'?'先指定彩球':info.deemedHit?'合法打离':'打离后先碰目标');
   }
   function statusLine(s) {
-    const on = s.g._model._gContext.ballOn;
-    if(s.frameEnd?.reason==='three-miss')return `连续三次未先碰目标球 · 玩家 ${s.frameEnd.winner+1} 赢得本局`;
-    if(s.missReplay?.warned)return '裁判警告：本杆须先碰目标球，再次失败即判负';
-    if (s.frameEnd) return s.frameEnd.reason==='black-lead'?'仅剩黑球，领先至少 8 分 · 本局结束':'超分至少 17 分，按约定结束本局';
-    if (s.conceded) return `${s.hotseat?'玩家 '+(s.conceded.playerIndex+1):s.conceded.playerIndex===s.g._fpc.gPlayerIndex?'你':'对手'}已认输`;
-    if (s.pending) return `犯规 ${s.pending.result.penalty} 分 · 接手打${ballOnLabel(on)} · `+
-      (s.freeBallReview?'手中球，自由球待裁判确认':s.freeBallNominee!=null?'已选自由球：'+COLOURS[s.g._simulator.getBallAtIndex(s.freeBallNominee).number]:s.freeBallAvailable?'可选自由球':'无自由球');
-    if (s.blackDecider) return `平局争黑 · ${s.hotseat ? `玩家 ${s.g._model._gContext.playerIndex + 1}` : s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex ? '你' : '对手'}击球`;
-    if (s.freeBallNominee != null) return `自由球：${COLOURS[s.g._simulator.getBallAtIndex(s.freeBallNominee).number]}（按${ballOnLabel(on)}计）`;
-    if (s.freeBallAvailable) return `目标：${ballOnLabel(on)} · 可选自由球`;
-    if (s.freeBallReview) return '手中球：自由球需裁判确认';
-    if (s.nominatedColour) return `本杆目标：${COLOURS[s.nominatedColour]}（${s.nominationSource === 'auto' ? '自动' : '手动'}）`;
-    if (on === 252) return '彩球：自动识别 · 可手动选球';
-    const target = PCOLCore.ballOnNumbers(on);
-    return target.length === 1 ? `目标：${COLOURS[target[0]]}` : '规则补丁已启用';
+    const ctx=s.g._model._gContext;
+    if(s.missReplay?.warned)return '再次漏碰将判负';
+    if(s.pending)return '接手打'+ballOnLabel(s.pending.result.nextBallOn);
+    if(s.blackDecider)return '平局争黑';
+    if(s.practice==='custom')return '自由练习';
+    if(ctx.inHand===2)return 'D 区摆白球';
+    if(s.freeBallNominee!=null)return '按'+ballOnLabel(ctx.ballOn)+'计分';
+    if(s.nominatedColour)return '目标 · '+COLOURS[s.nominatedColour];
+    if(ctx.ballOn===252)return '任选彩球';
+    return '目标 · '+ballOnLabel(ctx.ballOn);
   }
   const PANEL_POSITION_KEY = 'pcol-rules-patch:panel-position';
   function positionPanel(s, x, y) {
@@ -4196,7 +4292,7 @@ const PCOLLocalOpponent = (() => {
       const stored = JSON.parse(window.localStorage.getItem(PANEL_POSITION_KEY));
       if (Number.isFinite(stored?.x) && Number.isFinite(stored?.y)) s.panelPosition = stored;
     } catch (_) { /* Storage can be disabled; dragging still works this session. */ }
-    for(const handle of [s.shadow.querySelector('.drag'),s.shadow.querySelector('.status')]){
+    for(const handle of [s.ui.drag,s.ui['hud-copy']]){
     handle.onpointerdown = e => {
       if (e.button !== 0 || s.modal) return;
       e.preventDefault();
@@ -4219,7 +4315,7 @@ const PCOLLocalOpponent = (() => {
     handle.onpointercancel = finish;
     handle.ondblclick = () => {
       s.panelPosition = null;
-      Object.assign(s.host.style,{left:'16px',top:'auto',bottom:'14px'});
+      Object.assign(s.host.style,{left:'',top:'',bottom:''});
       try { window.localStorage.removeItem(PANEL_POSITION_KEY); } catch (_) {}
     };
     }
@@ -4230,40 +4326,29 @@ const PCOLLocalOpponent = (() => {
     patches.push(() => {observer.disconnect();window.removeEventListener('resize',resize);window.cancelAnimationFrame(s.renderFrame);});
   }
   function mount(s) {
-    if (s.host) return;
-    const host = document.createElement('div');
-    host.id = 'pcol-rules-patch';
-    host.style.cssText = 'position:fixed;left:16px;bottom:14px;z-index:2147483000;font:13px/1.5 "Microsoft YaHei",sans-serif;color:#fff;';
-    const shadow = host.attachShadow({ mode: 'open' });
-    shadow.innerHTML = `<style>
-      *{box-sizing:border-box}button{font:inherit;cursor:pointer;border:1px solid #3b5149;border-radius:9px;background:#21332d;color:#edf3ef;padding:10px 15px;transition:background .15s,border-color .15s}button:hover{background:#304b40;border-color:#739a83}button:focus-visible{outline:2px solid #dfc591;outline-offset:3px}button.primary{background:#d7bf8c;border-color:#d7bf8c;color:#18271f;font-weight:700}button.primary:hover{background:#ebd5a8}button:disabled{opacity:.45;cursor:default}[hidden]{display:none!important}
-      .bar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 32px);padding:9px 12px;background:#101f19f2;border:1px solid #446352;border-radius:13px;box-shadow:0 5px 24px #0005}.bar button{padding:6px 11px;font-size:12px;order:2}.bar .ai{order:1;background:#d7bf8c;border-color:#d7bf8c;color:#18271f;font-weight:700}.bar .profile{order:3;background:transparent;color:#adc2b6;border-color:transparent}.bar .concede{color:#dfb6a9}.status{max-width:min(400px,calc(100vw - 100px));color:#d9e6dd;line-height:1.6;padding-right:8px}.drag{cursor:grab;touch-action:none;user-select:none;padding:0 3px;color:#8aa893;font-size:20px}.drag:active{cursor:grabbing}.bar[data-practice="true"] .status{cursor:grab;touch-action:none;user-select:none;font-weight:500}
-      .veil{position:fixed;inset:0;display:grid;place-items:center;background:#07100cd9;padding:16px}.panel{position:relative;width:min(540px,100%);max-height:calc(100dvh - 32px);overflow:auto;overscroll-behavior:contain;background:#13251d;border:1px solid #4a6553;border-radius:18px;padding:28px;box-shadow:0 24px 90px #0009;line-height:1.6}.panel h2{font-size:24px;font-weight:600;letter-spacing:.02em;margin:0 42px 5px 0;color:#f3f1e6}.panel p{margin:6px 0 18px;color:#aebfb3;font-size:13px}.choices{display:flex;gap:9px;flex-wrap:wrap}.note{font-size:12px;color:#a4b7a8;margin-top:16px;line-height:1.7}.dismiss-dialog{position:absolute;right:18px;top:18px;width:34px;height:34px;padding:0;font-size:23px;background:transparent;border-color:transparent;color:#b7c8ba}.dismiss-dialog:hover{background:#2a3e31}
-      .opponent-panel{width:min(660px,100%)}.ai-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 18px;border:1px solid #48614e;background:#1d3528;border-radius:12px;margin-top:20px}.ai-summary strong{font-size:15px;color:#e9efe5}.ai-summary small{display:block;color:#a5bca9;font-size:12px;margin-top:3px}.local-badge{color:#d9c18e;font-size:11px;white-space:nowrap;border:1px solid #6d7051;border-radius:20px;padding:3px 9px}.setting-section{margin-top:23px}.section-heading{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px}.section-heading h3{font-size:14px;font-weight:600;color:#e2e9df;margin:0}.section-heading span{font-size:11px;color:#97af9d}.setting-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.setting-option{text-align:left;padding:13px 14px;background:#192d22;border-color:#3b5141;position:relative}.setting-option strong{display:block;font-weight:600;font-size:14px}.setting-option small{display:block;color:#a0b49f;font-size:11px;margin-top:5px;line-height:1.6}.setting-option[aria-pressed="true"]{background:#304333;border-color:#d8c28c;box-shadow:inset 0 0 0 1px #d8c28c}.setting-option[aria-pressed="true"] strong{color:#f2dba7}.setting-option[aria-pressed="true"] strong::after{content:' ✓';font-size:11px}.current-setting{font-size:12px;color:#d7c395;padding-top:17px;margin-top:22px;border-top:1px solid #334b3b}.settings-footer{display:flex;justify-content:flex-end;gap:9px;margin-top:22px}.settings-footer .primary{min-width:146px}
-      @media(max-width:520px){.panel{padding:23px 18px;border-radius:14px}.panel h2{font-size:21px}.setting-options{gap:6px}.setting-option{padding:11px 8px}.setting-option strong{font-size:12px}.section-heading span{font-size:10px}.bar{padding:8px;gap:5px}.bar button{padding:6px 8px}.ai-summary{padding:13px}.settings-footer{flex-wrap:wrap}}
-    </style><div class="bar"><span class="drag" title="拖动浮窗；双击恢复位置">⠿</span><span class="status" title="拖动浮窗；双击恢复位置"></span><button type="button" class="hotseat" hidden>双人对局</button><button type="button" class="practice" hidden>练球</button><button type="button" class="retry" hidden>复位重打</button><button type="button" class="choose">选球</button><button type="button" class="concede" hidden>认输本局</button></div><div class="practice-controls"></div><div class="modal"></div>`;
+    if(s.host)return;
+    const host=document.createElement('div');host.id='pcol-rules-patch';
+    const shadow=host.attachShadow({mode:'open'}),style=document.createElement('style');
+    style.textContent=PCOLUIStyle+PCOLTableHUD.style+PCOLDialogUI.style;shadow.append(style);
     document.documentElement.appendChild(host);
-    s.host = host; s.shadow = shadow;
-    const aiButton=document.createElement('button');aiButton.type='button';aiButton.className='ai';
-    aiButton.textContent='与 AI 对局';aiButton.onclick=()=>showOpponent(s);shadow.querySelector('.bar').append(aiButton);
-    const profileButton=document.createElement('button');profileButton.type='button';profileButton.className='profile';
-    profileButton.textContent='玩家画像';profileButton.onclick=()=>showProfile(s);shadow.querySelector('.bar').append(profileButton);
-    const foulButton=document.createElement('button');foulButton.type='button';foulButton.className='foul-toggle';foulButton.hidden=true;
-    const foulOptions=document.createElement('section');foulOptions.className='foul-options';foulOptions.hidden=true;
-    foulOptions.setAttribute('aria-label','犯规方案');foulOptions.style.cssText='order:4;flex:1 0 100%;max-width:min(400px,calc(100vw - 56px))';
-    foulButton.onclick=()=>{if(s.pending){s.pending.folded=!s.pending.folded;render(s);s.g._gView.canvas.focus();}};
-    shadow.querySelector('.bar').append(foulButton,foulOptions);
-    enablePanelDrag(s);
-    shadow.querySelector('.hotseat').onclick = () => startHotseat(s);
-    shadow.querySelector('.practice').onclick = () => choosePractice(s);
-    shadow.querySelector('.retry').onclick = () => retryPractice(s);
-    shadow.querySelector('.choose').onclick = () => chooseBall(s);
-    shadow.querySelector('.concede').onclick = () => showConcession(s);
-    shadow.addEventListener('keydown', e => e.stopPropagation());
-    shadow.addEventListener('pointerdown', e => e.stopPropagation());
-    s.ui=Object.fromEntries(['bar','drag','status','hotseat','practice','retry','choose','concede','ai','profile','foul-toggle','foul-options']
-      .map(name=>[name,shadow.querySelector('.'+name)]));
-    render(s);
+    s.host=host;s.shadow=shadow;
+    const ui=s.ui=PCOLTableHUD.create(document,shadow);
+    const nativeUI=s.app._uiLayer||s.g._uiLayer;
+    for(const key of ['popBox','_onBoxClosed'])if(typeof nativeUI?.[key]==='function'){
+      wrap(nativeUI,key,original=>function(...args){const result=original.apply(this,args);requestRender(s);return result;});
+    }
+    const toolAction=action=>()=>{s.toolsOpen=false;action();render(s);};
+    ui.hotseat.onclick=toolAction(()=>startHotseat(s));
+    ui.ai.onclick=ui['opponent-settings'].onclick=toolAction(()=>showOpponent(s));
+    ui.practice.onclick=toolAction(()=>choosePractice(s));ui.profile.onclick=toolAction(()=>showProfile(s));
+    ui.retry.onclick=()=>retryPractice(s);ui.choose.onclick=()=>chooseBall(s);ui.concede.onclick=toolAction(()=>showConcession(s));
+    ui['foul-toggle'].onclick=()=>{if(s.pending){s.pending.folded=!s.pending.folded;render(s);s.g._gView.canvas.focus();}};
+    ui['hud-more'].onclick=()=>{s.toolsOpen=!s.toolsOpen;render(s);};
+    shadow.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Escape'&&s.toolsOpen&&!s.modal){
+      s.toolsOpen=false;render(s);s.g._gView.canvas.focus();
+    }});
+    shadow.addEventListener('pointerdown',e=>e.stopPropagation());
+    enablePanelDrag(s);render(s);
   }
   function requestRender(s) {
     if(s.renderFrame!=null)return;
@@ -4274,42 +4359,61 @@ const PCOLLocalOpponent = (() => {
   }
   const setUI=(node,key,value)=>{if(node[key]!==value)node[key]=value;};
   function render(s) {
-    if (!s.host) {mount(s);return;}
+    if(!s.host){mount(s);return;}
     if(s.renderFrame!=null){window.cancelAnimationFrame(s.renderFrame);s.renderFrame=null;}
-    const ui=s.ui;
-    const live = s.app._currentController === s.g && s.g._model._gState !== 1;
-    const home = s.app._currentController === s.app._controllers.home && s.app._controllers.home?.state === 3;
-    const custom=s.practice==='custom',replay=live && s.g._activeSubControl?.name==='replay';
-    const controlsVisible=live && custom && !replay && s.g._model._gState===4 && !s.shot && !s.practiceControlsHidden && !s.modal;
-    setUI(s.host.style,'display',live || home ? 'block' : 'none');
-    setUI(ui.bar,'hidden',replay || (live && custom && !controlsVisible));
-    const practiceAttribute=String(live && custom);
-    if(s.practiceAttribute!==practiceAttribute){ui.bar.setAttribute('data-practice',practiceAttribute);s.practiceAttribute=practiceAttribute;}
-    setUI(ui.drag,'hidden',live && custom);
-    setUI(ui.hotseat,'hidden',!home);setUI(ui.practice,'hidden',!home);
-    const retry = ui.retry;
-    setUI(retry,'hidden',!(live && s.practice));
-    setUI(retry,'disabled',!canRetryPractice(s) || s.modal);
-    setUI(retry,'title','恢复上一杆前的球位、分数和单杆分');
+    const ui=s.ui,g=s.g,model=g._model,ctx=model._gContext;
+    const live=s.app._currentController===g&&model._gState!==1;
+    const home=s.app._currentController===s.app._controllers.home&&s.app._controllers.home?.state===3;
+    const custom=s.practice==='custom',replay=live&&g._activeSubControl?.name==='replay';
+    const nativeUI=s.app._uiLayer||g._uiLayer,nativeBox=!!nativeUI?._activeBoxStack?.length;
+    const controlsVisible=live&&custom&&!replay&&!nativeBox&&model._gState===4&&!s.shot&&!s.practiceControlsHidden&&!s.modal;
+    const human=live&&ctx.playerIndex===g._fpc.gPlayerIndex,pending=human?s.pending:null;
+    const ended=live&&(s.frameEnd||s.conceded||!ctx.ballOn);
+    const ai=API.ai?.getStatus(),opp=ai?.opponent;
+    setUI(s.host.style,'display',live||home?'block':'none');
+    setUI(ui.bar,'hidden',!!(s.modal||nativeBox||ended||replay||live&&custom&&!controlsVisible));
+    const mode=home?'home':s.practice?'practice':'match';
+    ui.bar.setAttribute('data-mode',mode);
+    if(s.hudMode!==mode||pending&&s.foulPanelFor!==pending||s.modal){s.toolsOpen=false;s.hudMode=mode;}
+    if(s.foulPanelFor!==pending){
+      ui['foul-options'].replaceChildren();s.foulPanelFor=pending;if(pending)buildFoulChoices(s,pending);
+    }
+    ui.bar.setAttribute('data-foul',String(!!pending));ui.bar.setAttribute('data-folded',String(!!pending?.folded));
+    ui.bar.setAttribute('data-warn',String(!!s.missReplay?.warned));
+    const turn=s.hotseat?'PLAYER '+(ctx.playerIndex+1):human?'你的回合':'对手回合';
+    const phase=home?'':s.missReplay?.warned?'FINAL WARNING':s.pending?
+      `FOUL  +${s.pending.result.penalty}  ·  ${s.hotseat?'PLAYER '+(ctx.playerIndex+1):turn}`:
+      s.practice?'PRACTICE':opp?.enabled&&(opp.error||ai.turn?.failed)?'对手已暂停':
+      !human&&opp?.busy?'对手选杆中':turn;
+    setUI(ui['hud-phase'],'textContent',phase);setUI(ui['hud-phase'],'hidden',!phase);
+    setUI(ui.status,'textContent',home?'对局':statusLine(s));
+    const n=(s.nominatedColour||PCOLCore.ballOnNumbers(ctx.ballOn)[0]);
+    const dot=live&&!custom&&!s.missReplay?.warned&&n&&!(ctx.ballOn===252&&!s.nominatedColour)&&!s.blackDecider&&ctx.inHand!==2;
+    setUI(ui['hud-ball'],'hidden',!dot);
+    if(dot)ui['hud-ball'].style.backgroundColor=['','#d85653','#e5bd42','#619b70','#a47a52','#649ac5','#dba0af','#383d3a'][n];
     const touching=live?touchingNotice(s):'';
-    setUI(ui.status,'textContent',home ? 'PCOL · 对局与练习' : custom ? '自由练习' : `${s.hotseat ? `人格分裂 · ${actor(s)}${s.pending ? '决定' : '击球'} · ` : s.practice === 'standard' ? '单人练习 · ' : ''}${touching?`${touching} · `:''}${statusLine(s)}`);
-    const human=live&&s.g._model._gContext.playerIndex===s.g._fpc.gPlayerIndex;
-    const pending=human?s.pending:null;
-    if(s.foulPanelFor!==pending){ui['foul-options'].replaceChildren();s.foulPanelFor=pending;if(pending)buildFoulChoices(s,pending);}
-    setUI(ui['foul-toggle'],'hidden',!pending||s.modal);
-    setUI(ui['foul-toggle'],'textContent',pending?.folded?'犯规方案':'收起方案');
+    const free=live&&(s.freeBallReview?'待裁定':s.freeBallNominee!=null?'指定'+COLOURS[g._simulator.getBallAtIndex(s.freeBallNominee).number]:s.freeBallAvailable?(s.freeBallDeclined?'按原球打':'可提名'):'');
+    setUI(ui['touch-rule'],'hidden',!touching);setUI(ui['touch-detail'],'textContent',touching);
+    setUI(ui['free-rule'],'hidden',!free);setUI(ui['free-detail'],'textContent',free||'');
+    setUI(ui['hud-signals'],'hidden',!touching&&!free);
+    setUI(ui['foul-toggle'],'hidden',!pending);
+    setUI(ui['foul-toggle'],'textContent',pending?.folded?'犯规方案':'收起');
     ui['foul-toggle'].setAttribute('aria-expanded',String(!!pending&&!pending.folded));
-    setUI(ui['foul-options'],'hidden',!pending||pending.folded||s.modal);
-    const eligible = human && s.g._model._gState === 4 && (s.freeBallAvailable || s.freeBallReview || s.g._model._gContext.ballOn === 252);
+    setUI(ui['foul-options'],'hidden',!pending||!!pending.folded||s.modal);
+    const eligible=human&&model._gState===4&&(s.freeBallAvailable||s.freeBallReview||ctx.ballOn===252);
     setUI(ui.choose,'hidden',!eligible);
-    setUI(ui.concede,'hidden',!(live && s.g._model._gContext.playerIndex === s.g._fpc.gPlayerIndex && !s.modal && concessionInfo(s).available));
-    const aiStatus=API.ai?.getStatus(),opponent=aiStatus?.opponent;
-    const aiButton=ui.ai;
-    setUI(aiButton,'hidden',!!(live&&(!opponent?.enabled||s.hotseat||s.practice)));
-    const phase=opponent?.error||aiStatus?.turn.failed?'已暂停':aiStatus?.turn.busy?'选择回合方案':opponent?.busy?'正在试打':'设置';
-    setUI(aiButton,'textContent',home?'与 AI 对局':'本地 AI · '+phase);
-    setUI(aiButton,'title',opponent?.error || '调整对手难度，查看你的表现画像');
-    if(s.editor){s.editor.setVisible(controlsVisible);if(controlsVisible)s.editor.update(editableBalls(s),s.placement?.selectedIndex ?? null,Boolean(s.placement));}
+    setUI(ui.choose,'textContent',s.freeBallReview?'核定':s.freeBallAvailable?'提名':'选彩');
+    setUI(ui.hotseat,'hidden',!home);setUI(ui.practice,'hidden',!home);setUI(ui.ai,'hidden',!home);
+    setUI(ui.retry,'hidden',!(live&&s.practice));setUI(ui.retry,'disabled',!canRetryPractice(s));
+    setUI(ui['hud-main'],'hidden',!home&&!s.practice&&!pending&&!eligible);
+    setUI(ui['opponent-settings'],'hidden',!live||!opp?.enabled||!!s.hotseat||!!s.practice);
+    setUI(ui['foul-toggle'],'title','收起或展开犯规方案');
+    const canConcede=human&&!s.modal&&concessionInfo(s).available;
+    setUI(ui.concede,'hidden',!canConcede);
+    setUI(ui['hud-more'],'hidden',!!pending&&!canConcede);
+    setUI(ui['hud-tools'],'hidden',!s.toolsOpen||ui['hud-more'].hidden);
+    ui['hud-more'].setAttribute('aria-expanded',String(!ui['hud-tools'].hidden));
+    if(s.editor){s.editor.setVisible(controlsVisible);if(controlsVisible)s.editor.update(editableBalls(s),s.placement?.selectedIndex??null,Boolean(s.placement));}
   }
   function thinkingAllowed(s) {
     return !s.modal&&!s.g._paused;
@@ -4326,38 +4430,29 @@ const PCOLLocalOpponent = (() => {
     if (s.modal) s.g._paused = s.pausedBeforeModal;
     s.modal = false;s.modalKind=null;
     if(s.profileExportUrl){URL.revokeObjectURL(s.profileExportUrl);s.profileExportUrl=null;}
-    s.g._gView?.canvas?.focus();
+    const trigger=s.modalTrigger;s.modalTrigger=null;
     if (s.app._currentController === s.app._controllers.home) s.app._controllers.home._homeMainMenu?.activate();
     render(s);
+    if(s.app._currentController!==s.g&&trigger?.isConnected&&!trigger.hidden&&!trigger.closest?.('[hidden]'))trigger.focus({preventScroll:true});
+    else s.g._gView?.canvas?.focus();
   }
-  function dialog(s, title, message, choices, note = '', kind = 'ruling') {
+  function dialog(s, spec) {
     shotThinkingTime(s,true);
     mount(s);
-    if (!s.modal) s.pausedBeforeModal = s.g._paused;
-    s.modal = true;s.modalKind=kind; s.g._paused = true;
-    const veil = document.createElement('div'); veil.className = 'veil';
-    const panel = document.createElement('section'); panel.className = 'panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); panel.setAttribute('aria-label', title);
-    const h = document.createElement('h2'); h.textContent = title;
-    const p = document.createElement('p'); p.textContent = message;
-    const group = document.createElement('div'); group.className = 'choices';
-    for (const [label, action, primary] of choices) {
-      const b = document.createElement('button'); b.type = 'button'; b.textContent = label; if (primary) b.className = 'primary';
-      b.onclick = () => action(); group.append(b);
-    }
-    panel.append(h, p, group);
-    if (note) { const n = document.createElement('div'); n.className = 'note'; n.textContent = note; panel.append(n); }
-    veil.append(panel); s.shadow.querySelector('.modal').replaceChildren(veil);
-    // Let the inserted dialog paint before focusing: focus can force layout
-    // inside stroke adjudication. A second frame crosses that first paint.
+    if (!s.modal) {s.pausedBeforeModal=s.g._paused;s.modalTrigger=['profile','difficulty','practice'].includes(spec.kind)?s.shadow.activeElement:null;}
+    s.modal=true;s.modalKind=spec.kind||'ruling';s.g._paused=true;
+    const ui=PCOLDialogUI.open(document,{...spec,close:spec.dismissible?()=>closeModal(s):undefined});
+    s.shadow.querySelector('.modal').replaceChildren(ui.veil);
+    // Keep focus work off the stroke-end render. An early pointer choice keeps its own focus.
     window.cancelAnimationFrame(s.modalFocusFrame);
-    const button=group.querySelector('button');
-    s.modalFocusFrame=button?window.requestAnimationFrame(()=>{
+    s.modalFocusFrame=window.requestAnimationFrame(()=>{
       s.modalFocusFrame=window.requestAnimationFrame(()=>{
         s.modalFocusFrame=null;
-        if(s.modal&&s.shadow.querySelector('.panel')===panel&&!panel.contains(s.shadow.activeElement))button.focus({preventScroll:true});
+        if(s.modal&&s.shadow.querySelector('.panel')===ui.panel&&!ui.panel.contains(s.shadow.activeElement))
+          (spec.dismissible?ui.heading:ui.actions.querySelector('button')||ui.heading).focus({preventScroll:true});
       });
-    }):null;
-    return panel;
+    });
+    return ui;
   }
   function concessionInfo(s) {
     const m = s.g._model, ctx = m._gContext;
@@ -4408,9 +4503,9 @@ const PCOLLocalOpponent = (() => {
   }
   function showMissWarning(s){
     const chain=s.missReplay;
-    dialog(s,'裁判正式警告',`玩家 ${chain.offender+1} 已从同一原位连续两次未先碰目标球。再次从该原位出杆仍未先碰目标球，对手将赢得本局。`,[
-      ['已知悉，继续',()=>{chain.warned=true;closeModal(s);},true]
-    ],'','miss-warning');
+    dialog(s,{kind:'miss-warning',tone:'warning',kicker:'FRAME WARNING',title:'再次失误将判负',
+      message:`玩家 ${chain.offender+1} 已在同一原位连续两次未先碰目标球。本次复位后若再次未先碰目标球，对手赢得本局。`,
+      choices:[['已知悉，继续',()=>{chain.warned=true;closeModal(s);},true]]});
   }
   function confirmFreeBall(s,available) {
     s.freeBallReview=false;s.freeBallAvailable=available;
@@ -4429,10 +4524,11 @@ const PCOLLocalOpponent = (() => {
   function showConcession(s) {
     const info = concessionInfo(s);
     if (!info.available || s.modal || s.g._model._gContext.playerIndex !== s.g._fpc.gPlayerIndex) return;
-    dialog(s, '本局是否继续？', `${actor(s)}落后 ${info.deficit} 分，剩余最高可得 ${info.remaining} 分，已超分 ${info.excess} 分。可以继续争取罚分，或认输本局。`, [
+    dialog(s,{kind:'concession',kicker:'FRAME DECISION',title:'继续这一局？',
+      stats:[['落后',info.deficit+' 分'],['台面剩余',info.remaining+' 分'],['超分',info.excess+' 分']],choices:[
       ['继续本局', () => closeModal(s), true],
       ['认输本局', () => concedeFrame(s)]
-    ], '继续后，出杆前仍可用左下角的“认输本局”按钮重新选择。');
+    ]});
   }
   function offerConcession(s, previousPlayer) {
     const ctx = s.g._model._gContext;
@@ -4445,21 +4541,23 @@ const PCOLLocalOpponent = (() => {
     const m = s.g._model;
     if (m._gState !== 4 || m._gContext.playerIndex !== s.g._fpc.gPlayerIndex) return;
     if (s.freeBallReview) {
-      dialog(s, '手中球的自由球判定', '只有白球在 D 区内所有合法位置都无法看见目标球两侧，才可判自由球。这个特殊局面需要裁判确认。', [
+      dialog(s,{kind:'free-verdict',kicker:'裁判确认 · D 区',title:'FREE BALL',message:'在 D 区内所有合法摆位，目标球是否都至少有一侧被挡住？',choices:[
         ['不判自由球', () => confirmFreeBall(s,false), true],
         ['裁判确认自由球', () => { if(!confirmFreeBall(s,true)&&!s.modal)chooseBall(s); }]
-      ], '程序未把有限采样当成全 D 区证明。');
+      ]});
     } else if (s.freeBallAvailable) {
       const on = PCOLCore.ballOnNumbers(m._gContext.ballOn);
       const candidates = balls(s.g).filter(b => b.active && b.n > 0 && !on.includes(b.n));
-      dialog(s, '自由球', '请选择作为目标球的自由球，或按原目标球继续。自由球按本杆目标球的分值计算。', [
-        ...candidates.map(b => [COLOURS[b.n], () => { s.freeBallNominee = b.i; s.freeBallDeclined = false; closeModal(s); }]),
-        ['按原目标球继续', () => { s.freeBallNominee = null; s.freeBallDeclined = true; closeModal(s); }, true]
-      ]);
+      dialog(s,{kind:'free-ball',kicker:'指定本杆目标',title:'FREE BALL',layout:'balls',message:`可指定一颗球，按${ballOnLabel(m._gContext.ballOn)}计分。`,dismissible:true,choices:[
+        ...candidates.map(b => [COLOURS[b.n], () => { s.freeBallNominee = b.i; s.freeBallDeclined = false; closeModal(s); },false,{ball:b.n,selected:s.freeBallNominee===b.i}]),
+        ['按原目标球继续', () => { s.freeBallNominee = null; s.freeBallDeclined = true; closeModal(s); },false,{role:'alternative'}]
+      ]});
     } else if (m._gContext.ballOn === 252) {
-      const choices = balls(s.g).filter(b => b.active && b.n > 1).map(b => [COLOURS[b.n], () => { s.nominatedColour = b.n; s.nominationSource = 'manual'; closeModal(s); }]);
-      choices.push(['使用自动识别', () => { s.nominatedColour = null; s.nominationSource = null; closeModal(s); }]);
-      dialog(s, '指定彩球', needsDeclaration === 'touching' ? '白球贴着彩球，规则要求明确声明目标。指定相贴彩球后，合法打离即视为已碰目标；指定其他彩球则仍须先碰到它。选好后再按空格出杆。' : needsDeclaration ? '当前方向无法明确判断目标彩球，请先指定。选好后可继续调整瞄准，再按空格出杆。' : '通常会在出杆时自动识别目标；也可以在这里手动指定。白球可先碰库，但首先碰到的目标球必须符合指定。', choices);
+      const choices = balls(s.g).filter(b => b.active && b.n > 1).map(b => [COLOURS[b.n], () => { s.nominatedColour = b.n; s.nominationSource = 'manual'; closeModal(s); },false,{ball:b.n,selected:s.nominatedColour===b.n}]);
+      if(!needsDeclaration)choices.push(['使用自动识别', () => { s.nominatedColour = null; s.nominationSource = null; closeModal(s); },false,{role:'alternative'}]);
+      const touching=needsDeclaration==='touching';
+      dialog(s,{kind:touching?'touching':'nomination',kicker:touching?'明确指定彩球':'BALL ON',title:touching?'TOUCHING BALL':'指定彩球',layout:'balls',dismissible:true,
+        message:touching?'白球贴着彩球。请先指定本杆目标，再瞄准出杆。':needsDeclaration?'当前方向有多个可能目标，请选定一颗。':'选定本杆要先碰的彩球。',choices});
     }
   }
   function takeSnapshot(s) {
@@ -4468,11 +4566,10 @@ const PCOLLocalOpponent = (() => {
   }
   function choosePractice(s) {
     if (s.modal) return;
-    dialog(s, '选择练习方式', '两种练习都由你独自控制，每杆结束后均可复位重打。', [
-      ['自定义摆球 · 自由练习', () => { closeModal(s); startPractice(s, 'custom'); }, true],
-      ['正常球形 · 斯诺克规则', () => { closeModal(s); startPractice(s, 'standard'); }],
-      ['返回', () => closeModal(s)]
-    ], '自定义模式可自由摆放一套标准球组，不限制先碰球；正常模式按红球、彩球顺序计分与判罚。');
+    dialog(s,{kind:'practice',kicker:'PRACTICE',title:'选择练习方式',layout:'tiles',dismissible:true,choices:[
+      ['自由练习',()=>{closeModal(s);startPractice(s,'custom');},false,{detail:'自定球位，反复练球'}],
+      ['标准练习',()=>{closeModal(s);startPractice(s,'standard');},false,{detail:'标准开局，按规则计分'}]
+    ]});
   }
   function startPractice(s, mode) {
     const home = s.app._controllers.home;
@@ -4762,81 +4859,61 @@ const PCOLLocalOpponent = (() => {
       s.turnManager?.cancel();s.opponent?.reset();restartAI(s);return;
     }
     if(s.modal || s.app._currentController!==s.g)return;
-    dialog(s,'对手暂停',error.message,[
+    const ui=dialog(s,{kind:'opponent-error',kicker:'LOCAL AI',tone:'warning',title:'对手选杆中断',choices:[
       ['重试选杆',()=>{closeModal(s);s.turnManager?.cancel();s.opponent.reset();restartAI(s);s.ensureAITurn?.();},true],
-      ['关闭提示',()=>closeModal(s)]
-    ],'当前出杆已停止。重试会重新检查球局并搜索候选。');
-  }
-  function dismissiblePanel(s,panel) {
-    const close=document.createElement('button');close.type='button';close.className='dismiss-dialog';close.textContent='×';close.setAttribute('aria-label','关闭');close.title='关闭（Esc）';close.onclick=()=>closeModal(s);panel.append(close);
-    panel.addEventListener('keydown',e=>{
-      if(e.key==='Escape'){e.preventDefault();closeModal(s);}
-      if(e.key==='Tab'){
-        const buttons=[...panel.querySelectorAll('button:not(:disabled)')],first=buttons[0],last=buttons[buttons.length-1];
-        if(e.shiftKey&&s.shadow.activeElement===first){e.preventDefault();last.focus();}
-        else if(!e.shiftKey&&s.shadow.activeElement===last){e.preventDefault();first.focus();}
-      }
-    });
+      ['返回球台',()=>closeModal(s)]
+    ]});
+    const detail=PCOLDialogUI.details(document,'查看原因');detail.append(PCOLDialogUI.make(document,'p',null,error.message));ui.body.append(detail);
   }
   function showOpponent(s) {
     const fromHome=s.app._currentController===s.app._controllers.home;
-    const panel=dialog(s,'本地 AI 对局',fromHome?'选择对手难度，直接开局。':'选择与你相适应的对手难度。',[]);
-    panel.classList.add('opponent-panel');panel.querySelector('.choices').remove();dismissiblePanel(s,panel);
-    const summary=document.createElement('div');summary.className='ai-summary';
-    summary.innerHTML='<div><strong>本地 AI</strong><small>根据球局比较进攻、走位、拆球与防守</small></div><span class="local-badge">本机选杆</span>';panel.append(summary);
-    const skillLabels={easy:'简单',matched:'匹敌',challenge:'挑战'};
-    const descriptions={easy:'比你的估计水平稍低',matched:'接近你的估计水平',challenge:'比你的估计水平稍高'};
-    const current=document.createElement('div');current.className='current-setting';current.setAttribute('aria-live','polite');
-    const refresh=()=>{
-      syncAimGuide(s);
-      const profile=s.getLocalAI().getStatus().profile,d=profile?.dimensions;
-      current.textContent='当前难度：'+skillLabels[s.aiSettings.difficulty]+(profile?
-        ` · 已识别进攻 ${profile.attempts} 杆（长台 ${profile.longAttempts}） · 衔接 ${d?.position?.samples||0} 次 · 防守 ${d?.safety?.samples||0} 次 · 解球 ${d?.escape?.samples||0} 次`:' · 正在了解你的水平');
-      const saved=s.profileStore.getStatus();
-      current.textContent+=' · '+(saved.reloadRequired?'发现较新画像，请刷新载入':saved.error?'画像保存异常':saved.syncEnabled&&saved.disk&&!saved.pending?'画像已同步到电脑':saved.local?'画像已本机保存':'画像载入中');
-      for(const b of panel.querySelectorAll('[data-setting]'))b.setAttribute('aria-pressed',String(s.aiSettings[b.dataset.setting]===b.dataset.value));
-      render(s);
-    };
-    for(const [key,label,caption,values] of [['difficulty','对手难度','根据你的实际表现逐局调整',skillLabels]]){
-      const section=document.createElement('section');section.className='setting-section';
-      const heading=document.createElement('div');heading.className='section-heading';heading.innerHTML='<h3>'+label+'</h3><span>'+caption+'</span>';
-      const group=document.createElement('div');group.className='setting-options';group.setAttribute('role','group');group.setAttribute('aria-label',label);
-      for(const [value,text] of Object.entries(values)){
-        const b=document.createElement('button');b.type='button';b.className='setting-option';b.dataset.setting=key;b.dataset.value=value;
-        b.innerHTML='<strong>'+text+'</strong><small>'+descriptions[value]+'</small>';
-        b.onclick=()=>{if(s.aiSettings[key]===value)return;s.aiSettings[key]=value;s.turnManager?.cancel();s.opponent?.reset();s.preparedShot=null;s.aiPreparedMark=null;if(!s.shot)restartAI(s);refresh();};group.append(b);
-      }section.append(heading,group);panel.append(section);
+    const profile=s.getLocalAI().getStatus().profile;
+    const ui=dialog(s,{kind:'difficulty',kicker:'LOCAL OPPONENT',title:'对手难度',dismissible:true,
+      message:profile?'根据你的击球水平匹配本地对手。':'本地对手随你的击球表现调整。',choices:[
+        [fromHome?'开始对局':'继续对局',()=>{closeModal(s);if(fromHome)startEnhancedGame(s);},true]
+      ]});
+    const group=PCOLDialogUI.make(document,'div','difficulty-options');group.setAttribute('role','group');group.setAttribute('aria-label','对手难度');
+    const rows=[];
+    function refresh(){for(const [button,value] of rows)button.setAttribute('aria-pressed',String(s.aiSettings.difficulty===value));syncAimGuide(s);render(s);}
+    for(const [value,label,detail] of [['easy','简单','略低于你'],['matched','匹敌','接近你的水平'],['challenge','挑战','略高于你']]){
+      const button=PCOLDialogUI.make(document,'button','difficulty-option');button.type='button';
+      button.append(PCOLDialogUI.make(document,'strong',null,label),PCOLDialogUI.make(document,'small',null,detail));
+      button.onclick=()=>{if(s.aiSettings.difficulty===value)return;s.aiSettings.difficulty=value;s.turnManager?.cancel();s.opponent?.reset();s.preparedShot=null;s.aiPreparedMark=null;if(!s.shot)restartAI(s);refresh();};
+      rows.push([button,value]);group.append(button);
     }
-    panel.append(current);
-    const note=document.createElement('div');note.className='note';note.textContent='样本少时谨慎调整；同一局内基础强度固定。主动切换难度用于后续选杆。';panel.append(note);
-    const footer=document.createElement('div');footer.className='settings-footer';
-    const back=document.createElement('button');back.type='button';back.textContent=fromHome?'返回':'关闭设置';back.onclick=()=>closeModal(s);footer.append(back);
-    const done=document.createElement('button');done.type='button';done.className='primary';done.textContent=fromHome?'开始对局 →':'继续对局';done.onclick=()=>{closeModal(s);if(fromHome)startEnhancedGame(s);};footer.append(done);panel.append(footer);
-    refresh();done.focus();
+    ui.body.append(group);refresh();
   }
   function showProfile(s) {
     const store=s.profileStore,saved=store.getStatus(),profile=store.get()?.profile;
-    const panel=dialog(s,'玩家画像',profile?`已识别进攻 ${profile.attempts} 杆，其中长台 ${profile.longAttempts} 杆。`:
-      '与本地 AI 对局后，画像会根据你的击球逐步更新。',[]);
-    panel.querySelector('.choices').remove();dismissiblePanel(s,panel);
-    const note=document.createElement('div');note.className='note';
-    note.textContent=(saved.reloadRequired?'有较新的画像，刷新后载入。':saved.error?'画像保存异常。':saved.local?'画像已保存在本机。':'玩家画像会自动保存在当前设备。')+
-      (saved.journalError?' 画像日志写入失败。':'');panel.append(note);
-    const download=document.createElement('a');download.hidden=true;download.style.cssText='display:block;color:#e8d4a6;margin-top:12px';panel.append(download);
-    const footer=document.createElement('div');footer.className='settings-footer';footer.style.flexWrap='wrap';
-    const exp=document.createElement('button');exp.type='button';exp.textContent='导出画像日志';
-    exp.onclick=async()=>{exp.disabled=true;try{
-      const blob=await store.exportLog();if(!panel.isConnected)return;
-      if(!blob.size){note.textContent='尚无可导出的画像日志。';return;}
+    const ui=dialog(s,{kind:'profile',kicker:'PLAYER PROFILE',title:'玩家画像',dismissible:true,
+      message:profile?'':'与本地 AI 对局后可查看击球表现。',
+      ...(profile?{stats:[['已识别进攻',profile.attempts+' 杆'],['其中长台',profile.longAttempts+' 杆']]}:{})});
+    const message=PCOLDialogUI.make(document,'p','dialog-status');
+    const status=(text,problem=false)=>{message.textContent=text;message.setAttribute('data-error',String(problem));};
+    message.setAttribute('role','status');
+    if(saved.reloadRequired)status('有较新的画像，刷新游戏后载入。');
+    else if(saved.error||saved.journalError)status(saved.error?'画像保存失败。':'部分画像更新未写入日志。',true);
+    else if(saved.local)status('已保存在当前设备。');
+    ui.body.append(message);
+    if(profile){const shots=PCOLDialogUI.details(document,'击球分项'),dimensions=profile.dimensions||{};
+      shots.append(PCOLDialogUI.facts(document,[['衔接',dimensions.position],['防守',dimensions.safety],['解球',dimensions.escape]].map(([label,d])=>[label,(d?.samples||0)+' 次'])));
+      ui.body.append(shots);}
+    const more=PCOLDialogUI.details(document,'存储与同步'),sync=PCOLDialogUI.make(document,'button','sync-switch');
+    sync.type='button';const label=PCOLDialogUI.make(document,'span',null,'本机画像同步'),state=PCOLDialogUI.make(document,'strong');
+    sync.append(label,state);
+    const update=()=>{state.textContent=s.localSync?'已开启':'已关闭';sync.setAttribute('aria-pressed',String(s.localSync));};
+    sync.onclick=()=>{s.setLocalSync(!s.localSync);update();};update();more.append(sync,PCOLDialogUI.make(document,'p',null,'在运行 PCOL 同步服务的设备上使用。'));ui.body.append(more);
+    const exp=PCOLDialogUI.make(document,'button','primary','导出画像日志');exp.type='button';
+    const download=PCOLDialogUI.make(document,'a','dialog-save','保存画像日志');download.hidden=true;
+    exp.onclick=async()=>{exp.disabled=true;exp.textContent='准备文件…';try{
+      const blob=await store.exportLog();if(!ui.panel.isConnected)return;
+      if(!blob.size){status('尚无可导出的画像记录。');return;}
       if(s.profileExportUrl)URL.revokeObjectURL(s.profileExportUrl);
       s.profileExportUrl=URL.createObjectURL(blob);download.href=s.profileExportUrl;
       download.download=`pcol-profile-${new Date().toISOString().slice(0,10)}.jsonl`;
-      download.textContent='保存画像日志';download.hidden=false;download.focus();
-    }catch(_){note.textContent='画像日志导出失败，请重试。';}finally{exp.disabled=false;}};footer.append(exp);
-    const sync=document.createElement('button');sync.type='button';sync.title='仅在当前设备运行了 PCOL 本地服务时开启';
-    const update=()=>{sync.textContent='本机画像同步：'+(s.localSync?'开':'关');sync.setAttribute('aria-pressed',String(s.localSync));};
-    sync.onclick=()=>{s.setLocalSync(!s.localSync);update();};update();footer.append(sync);
-    const done=document.createElement('button');done.type='button';done.className='primary';done.textContent='完成';done.onclick=()=>closeModal(s);footer.append(done);panel.append(footer);done.focus();
+      exp.hidden=true;download.hidden=false;download.focus();
+    }catch(_){status('导出失败，可重试。',true);}finally{exp.disabled=false;exp.textContent='导出画像日志';}};
+    ui.actions.append(exp,download);
   }
   function resetTurn(s) { s.turnManager?.cancel();s.aiPreparedMark=null;s.preparedShot=null;s.nominatedColour = null; s.nominationSource = null; s.freeBallNominee = null; s.freeBallAvailable = false; s.freeBallReview = false; s.freeBallDeclined = false; s.aiTarget = null; }
   function updateFreeBall(s, result) {
@@ -4890,7 +4967,8 @@ const PCOLLocalOpponent = (() => {
       [s.hotseat?`${label(drawWinnerIndex)}先击球`:'我先击球',()=>start(drawWinnerIndex),true],
       [s.hotseat?`${label(1-drawWinnerIndex)}先击球`:'让对手先击球',()=>start(1-drawWinnerIndex)]
     ]:[['开始争黑',()=>start(drawWinnerIndex),true]];
-    dialog(s,'平局争黑',`比分 ${scores(m).join(' : ')}。${label(drawWinnerIndex)}赢得抽签${humanChooses?'，请选择谁先击球':'并选择先击球'}。黑球重放点位，先手从 D 区手中球开始；首次进球或犯规结束本局。`,choices);
+    dialog(s,{kind:'tie-break',kicker:'RE-SPOTTED BLACK',title:'平局争黑',
+      message:`${scores(m).join(' : ')} 平。${label(drawWinnerIndex)}赢得抽签${humanChooses?'，请选择先手。':'并选择先手。'}`,choices});
   }
   function prepareTakeover(s,pending) {
     const ctx=s.g._model._gContext;
@@ -4907,7 +4985,7 @@ const PCOLLocalOpponent = (() => {
     if (!pending || (action==='restore'&&!pending.miss)) return false;
     const g=s.g,m=g._model,sim=g._simulator,ctx=m._gContext;
     if(action==='continue'&&ctx.playerIndex===g._fpc.gPlayerIndex){
-      pending.folded=true;render(s);
+      ctx.ballOn=pending.result.nextBallOn;pending.folded=true;render(s);
       if(!s.modal)g._gView.canvas.focus();
       return true;
     }
@@ -4943,24 +5021,29 @@ const PCOLLocalOpponent = (() => {
   }
   function buildFoulChoices(s,p) {
     const panel=s.ui['foul-options'],group=document.createElement('div');group.className='choices';
-    const button=(text,action)=>{const b=document.createElement('button');b.type='button';b.textContent=text;
-      b.onclick=()=>{if(s.pending===p&&!s.modal)action();};group.append(b);};
-    button(`${s.hotseat?actor(s):'我'}接手（打${ballOnLabel(p.result.nextBallOn)}）`,()=>resolveFoul(s,'continue'));
-    button(s.hotseat?`玩家 ${p.offender+1} 从现位置继续`:'对手从现位置继续',()=>resolveFoul(s,'again'));
-    if(p.miss)button('复位后让对手重打',()=>resolveFoul(s,'restore'));
-    if(p.reviewMiss)button(p.reviewReason==='free-ball-score'?'先核定自由球，再裁定空杆':'裁判确认空杆并复位',()=>{
-      if(p.reviewReason==='free-ball-score'){chooseBall(s);return;}p.miss=true;resolveFoul(s,'restore');
-    });
-    const note=document.createElement('div');note.className='note';
-    const ruleNote=p.reviewMiss?({
-      intent:'仅在裁判认定故意未击中目标球时确认空杆。',
-      effort:'裁判确认是否尽力解球；无法击中且已用足够力度打向目标时仅判犯规。',
-      'in-hand':'手中球的可行路线需裁判核对后判断空杆。',
-      'free-ball-score':'裁判应先核对罚后自由球及台面剩余分数，再判断空杆。'
-    }[p.reviewReason]||'由裁判判断是否尽力解球。'):'';
-    const warning=p.fullBall&&p.miss&&p.missFailures>=2?'选择复位将正式警告；再次未先击中目标球可判负。':'';
-    note.textContent=`${description(p.result.foulCode)}。可绕台、瞄准或收起方案，出杆即接手。 ${ruleNote}${warning}`.trim();
-    panel.append(group,note);
+    group.setAttribute('aria-label','下一杆');
+    const cause=document.createElement('p');cause.className='foul-cause';
+    for(const reason of description(p.result.foulCode).split('；')){
+      const part=document.createElement('span');part.textContent=reason;cause.append(part);
+    }
+    function choice(key,label,detail,action){
+      const b=document.createElement('button'),title=document.createElement('strong'),hint=document.createElement('small');
+      b.type='button';b.setAttribute('data-action',key);title.textContent=label;hint.textContent=detail;b.append(title,hint);
+      b.onclick=()=>{if(s.pending===p&&!s.modal)action();};group.append(b);
+    }
+    choice('continue','接手','出杆确认',()=>resolveFoul(s,'continue'));
+    choice('again','现位再打','交给'+(s.hotseat?'玩家 '+(p.offender+1):'对手'),()=>resolveFoul(s,'again'));
+    if(p.miss)choice('restore','原位重打','恢复球位',()=>resolveFoul(s,'restore'));
+    if(p.reviewMiss){
+      const free=p.reviewReason==='free-ball-score';
+      choice('review',free?'裁定自由球':'裁定空杆',free?'核对后再选':'确认后复位',()=>{
+        if(free){chooseBall(s);return;}p.miss=true;resolveFoul(s,'restore');
+      });
+    }
+    panel.append(cause,group);
+    const warning=p.fullBall&&p.miss&&p.missFailures>=2?'再选复位：正式警告，下一杆再失即判负。':'';
+    const review=p.reviewMiss?({intent:'确认故意漏碰才可复位。',effort:'请裁定是否已尽力解球。','in-hand':'请核对 D 区的可行路线。','free-ball-score':'先裁定自由球，再按剩余分数判断空杆。'}[p.reviewReason]||'请裁定是否已尽力解球。'):'';
+    if(warning||review){const note=document.createElement('div');note.className='foul-notice';note.textContent=warning||review;panel.append(note);}
   }
   function offerFoul(s) {
     const p=s.pending,g=s.g;
@@ -4985,10 +5068,10 @@ const PCOLLocalOpponent = (() => {
     let firstHits=evidence.firstHits,jump={...evidence.jump};
     const oldMask = shot.before.context.ballOn;
     if ((jump.indeterminate || shot.overflow) && !jump.foul && jumpDecision === undefined) {
-      dialog(s, '腾空轨迹需要裁判确认', '本杆的落地或接触情况处在自动判定边界，请确认是否属于非法跳球。判定期间比赛暂停。', [
+      dialog(s,{kind:'jump-verdict',kicker:'REFEREE',title:'本杆是否跳球犯规？',choices:[
         ['未发生非法跳球', () => { closeModal(s); finishStroke(s, false); }, true],
         ['裁判确认跳球犯规', () => { closeModal(s); finishStroke(s, true); }]
-      ]);
+      ]});
       return m;
     }
     if(jumpDecision!==undefined)jump.refereeDecision=jumpDecision;
@@ -5000,14 +5083,14 @@ const PCOLLocalOpponent = (() => {
     if(shot.reviewResult?.status==='corrected'){result={...shot.reviewResult.result};jump=shot.reviewResult.jump;firstHits=shot.reviewResult.firstHits;}
     if(result.foulCode&&!shot.rulingAccepted&&shot.before.context.playerIndex===g._fpc.gPlayerIndex&&!s.practice&&!s.hotseat&&s.opponent?.getStatus().enabled){
       const resume=()=>{if(s.shot!==shot||shot.rulingAccepted)return;shot.rulingAccepted=true;closeModal(s);finishStroke(s,jumpDecision);};
-      const names=firstHits.map(i=>COLOURS[shot.before.balls.find(b=>b.i===i).n]).join('、')||'未碰到目标球';
+      const names=firstHits.map(i=>COLOURS[shot.before.balls.find(b=>b.i===i).n]).join('、')||'无';
       const pots=sim.result.pottedIndices.map(i=>COLOURS[shot.before.balls.find(b=>b.i===i).n]).join('、')||'无';
-      const explain=`${shot.before.context.playerIndex===g._fpc.gPlayerIndex?'你':'AI'}：${description(result.foulCode)}，罚 ${result.penalty} 分。应击：${COLOURS[result.ballOnUsed]||ballOnLabel(oldMask)}；首碰：${names}；进袋：${pots}。${jump.foul?'轨迹判定白球腾空越过目标球，未满足规则例外。':''}`;
-      const show=()=>dialog(s,'犯规说明',explain,[['接受判罚，继续',resume,true],...(!shot.appealed?[
+      const show=()=>dialog(s,{kind:'foul-verdict',kicker:'FOUL',title:`罚 ${result.penalty} 分`,message:description(result.foulCode),
+        stats:[['应击',COLOURS[result.ballOnUsed]||ballOnLabel(oldMask)],['首碰',names],['进袋',pots]],choices:[['接受判罚，继续',resume,true],...(!shot.appealed?[
         ['申诉复核',async()=>{
           if(shot.appealed||s.shot!==shot)return;
           shot.appealed=true;
-          dialog(s,'正在复核','比赛已暂停，正在按原球位、原出杆参数复核。',[]);
+          dialog(s,{kind:'review',kicker:'REFEREE REVIEW',title:'正在复核',message:'重放本杆球路…',busy:true});
           const evidence={snapshot:shot.before.replay,stroke:shot.actualStroke,original:result,
             balls:balls(g),potted:[...sim.result.pottedIndices],outOfBounds:[...sim.result.outOfBoundsIndices]};
           let review;
@@ -5015,9 +5098,10 @@ const PCOLLocalOpponent = (() => {
           catch(error){review={status:'inconclusive',reason:'复核未完成，维持原判。',error:error.message};}
           if(s.shot!==shot)return;
           shot.reviewResult=review;
-          dialog(s,review.status==='corrected'?'判罚已更正':'复核结束',review.reason,[['继续',resume,true]],'本杆只能申诉一次；复核不改变原来的出杆与球位。');
+          dialog(s,{kind:'review-result',kicker:'REFEREE REVIEW',title:review.status==='corrected'?'判罚已更正':'维持原判',
+            message:review.reason,choices:[['继续',resume,true]]});
         }]
-      ]:[])],shot.reviewResult?.reason||'有疑问可以申诉一次。复核期间不会开始下一杆。');
+      ]:[])]});
       show();return m;
     }
     const ctx = m._gContext, offender = ctx.playerIndex, breakBefore = m._players[offender].brk;
@@ -5214,10 +5298,10 @@ const PCOLLocalOpponent = (() => {
       const turn=s.turnManager.getStatus();
       if(turn.busy||turn.failed)return true;
       if(s.freeBallReview){
-        dialog(s,'AI 手中球的自由球判定','D 区自由球判定尚不确定，请裁判确认后由 AI 自行选球。',[
+        dialog(s,{kind:'free-verdict',kicker:'对手手中球 · D 区',title:'FREE BALL',message:'在 D 区内所有合法摆位，目标球是否都至少有一侧被挡住？',choices:[
           ['不判自由球',()=>confirmFreeBall(s,false),true],
           ['判自由球',()=>confirmFreeBall(s,true)]
-        ]);return true;
+        ]});return true;
       }
       const mark=m._gContext.nRounds+':'+m._gContext.playerIndex;
       const needs=s.pending||(m._gContext.inHand>0&&s.aiPreparedMark!==mark)||
@@ -5320,18 +5404,16 @@ const PCOLLocalOpponent = (() => {
         const choices=[];
         if(canRetryPractice(s))choices.push(['复位重打最后一杆',()=>retryPractice(s),true]);
         choices.push(['重新练习',()=>{closeModal(s);m.reqReset(sim);}]);
-        dialog(s,'练习完成',`本次得分 ${m._players[0].pts}，最高单杆 ${m._players[0].maxbrk}。`,choices);
+        dialog(s,{kind:'practice-result',kicker:'PRACTICE RESULT',title:'练习完成',
+          stats:[['本次得分',m._players[0].pts],['最高单杆',m._players[0].maxbrk]],choices});
         return;
       }
       const r = original.apply(this, args);
       s.resultBox=this._uiLayer._registeredBox.duoResultBox;
-      PCOLFrameResult.render(s.resultBox,m._players,s.resultStats.snapshot());
-      if (s.hotseat||s.frameEnd?.reason==='three-miss') {
-        const pts = scores(m), winner = s.frameEnd?.winner ?? s.conceded?.winnerIndex ?? (pts[0] === pts[1] ? null : pts[0] > pts[1] ? 0 : 1);
-        const box = this._uiLayer._registeredBox.duoResultBox;
-        box.head(winner == null ? 'DRAW' : `PLAYER ${winner + 1} WINS`+(s.frameEnd?.reason==='three-miss'?' · 连续三次未先碰目标球':''));
-        box._head.className = `box-head ${winner == null ? 'bright-copy' : 'success-copy'}`;
-      }
+      const pts=scores(m),winner=s.frameEnd?.winner??s.conceded?.winnerIndex??(pts[0]===pts[1]?null:pts[0]>pts[1]?0:1);
+      PCOLFrameResult.render(s.resultBox,m._players,s.resultStats.snapshot(),{
+        winner,reason:s.frameEnd?.reason||(s.conceded?'concession':null),hotseat:s.hotseat,human:g._fpc.gPlayerIndex
+      });
       return r;
     });
     wrap(m, 'getLocalAIInstance', original => function (...args) { return hookAI(s, original.apply(this, args)); });
