@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.26.1
+// @version      0.27.0
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -673,24 +673,24 @@ const PCOLCelebration = (() => {
       background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--accent) 62%,transparent) 50%,transparent)}
     .stage:before{top:0}.stage:after{bottom:0}
     .rail{position:relative;overflow:hidden}
-    .card{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:18px;padding:10px 38px 11px 36px;line-height:1.15}
+    .card{position:relative;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:20px;padding:12px 42px 13px 40px;line-height:1.15}
     .card:before{content:'';position:absolute;inset:-60% -40%;pointer-events:none;opacity:0;
       background:linear-gradient(112deg,transparent 43%,rgb(255 245 210 / 16%) 50%,transparent 57%)}
-    .number{display:block;font:700 46px/.96 var(--pc-display,"Saira ExtraCondensed ExCond",sans-serif);font-variant-numeric:tabular-nums;letter-spacing:.01em;color:var(--accent);text-shadow:0 2px 18px var(--glow)}
+    .number{display:block;font:700 54px/.96 var(--pc-display,"Saira ExtraCondensed ExCond",sans-serif);font-variant-numeric:tabular-nums;letter-spacing:.01em;color:var(--accent);text-shadow:0 2px 18px var(--glow)}
     .words{min-width:0;position:relative;padding-inline-start:18px;border-inline-start:1px solid color-mix(in srgb,var(--accent) 28%,transparent)}
-    .eyebrow{display:block;margin-bottom:4px;font:700 12px/1.05 var(--pc-display,"Saira ExtraCondensed ExCond",sans-serif);letter-spacing:.16em;color:var(--accent);white-space:nowrap}
-    .title{display:block;font:600 17px/1.28 var(--pc-font,"Microsoft YaHei UI",sans-serif);letter-spacing:.04em;color:var(--pc-text-strong,#f3f0e6);white-space:nowrap}
-    .player{display:block;overflow:hidden;max-width:14em;margin-top:2px;color:var(--pc-soft,#b5b0a4);font:400 12.5px/1.3 var(--pc-font,"Microsoft YaHei UI",sans-serif);text-overflow:ellipsis;white-space:nowrap}
+    .eyebrow{display:block;margin-bottom:4px;font:700 13px/1.05 var(--pc-display,"Saira ExtraCondensed ExCond",sans-serif);letter-spacing:.16em;color:var(--accent);white-space:nowrap}
+    .title{display:block;font:600 19px/1.28 var(--pc-font,"Microsoft YaHei UI",sans-serif);letter-spacing:.04em;color:var(--pc-text-strong,#f3f0e6);white-space:nowrap}
+    .player{display:block;overflow:hidden;max-width:14em;margin-top:2px;color:var(--pc-soft,#b5b0a4);font:400 13.5px/1.3 var(--pc-font,"Microsoft YaHei UI",sans-serif);text-overflow:ellipsis;white-space:nowrap}
     .maximum{--accent:#f4dc9c;--glow:rgb(244 220 156 / 34%)}
     .ultimate{--accent:#ffe596;--glow:rgb(255 224 130 / 45%);
       background:radial-gradient(ellipse at 50% 50%,rgb(62 48 18 / 38%),transparent 68%),linear-gradient(90deg,transparent,rgb(16 14 9 / 92%) 10%,rgb(22 18 10 / 96%) 50%,rgb(16 14 9 / 92%) 90%,transparent)}
-    .maximum .number,.ultimate .number{font-size:58px;background:linear-gradient(170deg,#fffdf4 10%,var(--accent) 52%,#b88938 96%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;filter:drop-shadow(0 2px 14px var(--glow))}
-    .ultimate .number{font-size:62px}
+    .maximum .number,.ultimate .number{font-size:66px;background:linear-gradient(170deg,#fffdf4 10%,var(--accent) 52%,#b88938 96%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;filter:drop-shadow(0 2px 14px var(--glow))}
+    .ultimate .number{font-size:72px}
     .maximum .card:before,.ultimate .card:before{opacity:1;animation:glint 1600ms 220ms ease-out both}
     .ultimate:after{height:1.5px;background:linear-gradient(90deg,transparent,#c89b3c 22%,#fff2c6 50%,#c89b3c 78%,transparent)}
     @keyframes ribbon{0%{opacity:0;transform:translateY(-6px)}9%,86%{opacity:1;transform:none}100%{opacity:0;transform:translateY(-4px)}}
     @keyframes glint{from{transform:translateX(-46%)}to{transform:translateX(46%)}}
-    @media(max-width:500px),(max-height:490px){.card{gap:12px;padding:7px 22px 8px}.words{padding-inline-start:12px}.number{font-size:36px}.maximum .number,.ultimate .number{font-size:44px}}
+    @media(max-width:500px),(max-height:490px){.card{gap:12px;padding:8px 24px 9px}.words{padding-inline-start:12px}.number{font-size:41px}.maximum .number{font-size:50px}.ultimate .number{font-size:54px}}
     @media(prefers-reduced-motion:reduce){.stage,.card:before{animation:none}}
   `;
   function create({document,window,host=document.body}){
@@ -886,7 +886,7 @@ const PCOLPractice = (() => {
     // A tool shelf: handle and disclosure stay available; the ball grid opens on demand.
     root.innerHTML = `
       <style>
-        .pe-palette-panel{position:fixed;inset:auto max(var(--pc-edge-x),env(safe-area-inset-right)) auto auto;top:calc(var(--pc-edge-y) + var(--pc-row) + 12px);width:190px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 88px);overflow:auto;overscroll-behavior:contain;z-index:3;pointer-events:auto;box-sizing:border-box;border-radius:4px;background:var(--pc-slab);box-shadow:0 16px 42px rgb(0 0 0 / 48%),inset 0 0 0 1px var(--pc-line-soft);color:var(--pc-text);font:400 13.5px/1.35 var(--pc-font);scrollbar-width:thin;scrollbar-color:var(--pc-line) transparent}
+        .pe-palette-panel{position:fixed;inset:auto max(var(--pc-edge-x),env(safe-area-inset-right)) auto auto;top:calc(var(--pc-edge-y) + var(--pc-row) + 12px);width:222px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 88px);overflow:auto;overscroll-behavior:contain;z-index:3;pointer-events:auto;box-sizing:border-box;border-radius:4px;background:var(--pc-slab);box-shadow:0 16px 42px rgb(0 0 0 / 48%),inset 0 0 0 1px var(--pc-line-soft);color:var(--pc-text);font:400 13.5px/1.35 var(--pc-font);scrollbar-width:thin;scrollbar-color:var(--pc-line) transparent}
         .pe-palette-panel[hidden],.pe-palette-panel [hidden]{display:none!important}.pe-palette-panel *{box-sizing:border-box}
         .pe-palette-panel button{font:inherit;border-radius:var(--pc-r);cursor:pointer;white-space:nowrap;transition:background-color .14s ease,color .14s ease,box-shadow .14s ease}.pe-palette-panel button:disabled{opacity:.36;cursor:default}.pe-palette-panel button:focus-visible{outline:2px solid var(--pc-amber);outline-offset:-2px}
         .pe-strip{display:grid;grid-template-columns:1fr 38px;align-items:stretch;border-bottom:1px solid var(--pc-line-soft)}.pe-palette-panel[data-folded="true"] .pe-strip{border-bottom:0}
@@ -894,10 +894,10 @@ const PCOLPractice = (() => {
         .pe-palette-panel .pe-disclosure{display:grid;place-items:center;min-height:40px;padding:0;border:0;border-radius:0;background:transparent;color:var(--pc-muted)}.pe-disclosure:after{content:'';border:solid currentColor;border-width:0 1.5px 1.5px 0;width:6.5px;height:6.5px;transform:rotate(225deg);transition:transform .16s ease}.pe-disclosure[aria-expanded="false"]:after{transform:rotate(45deg)}
         .pe-palette-panel[data-folded="true"]{width:110px}.pe-body{padding:0 9px 9px}
         .pe-caption{display:flex;justify-content:space-between;gap:8px;align-items:baseline;min-height:28px;padding:8px 2px 6px;color:var(--pc-muted);font-size:12px;white-space:nowrap}.pe-caption strong{color:var(--pc-amber);font-weight:600}
-        .pe-ball-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px}
-        .pe-palette-panel .pe-ball-button{display:flex;justify-content:flex-start;gap:8px;align-items:center;width:100%;min-height:36px;padding:4px 9px;border:0;color:var(--pc-text);background:var(--pc-velvet);text-align:start;font-weight:500}
+        .pe-ball-list{display:flex;flex-wrap:wrap;justify-content:center;gap:6px}
+        .pe-palette-panel .pe-ball-button{display:grid;place-items:center;width:var(--pc-row);height:var(--pc-row);padding:0;border:0;border-radius:50%;background:var(--pc-raise-hover)}
         .pe-palette-panel .pe-ball-button[aria-pressed="true"]{background:var(--pc-amber-soft);color:var(--pc-amber);box-shadow:inset 0 0 0 1px var(--pc-amber-rim)}
-        .pe-orb{display:block;width:16px;aspect-ratio:1;flex:none;border-radius:50%;background:var(--pc-orb),var(--ball);box-shadow:0 1px 4px rgb(0 0 0 / 45%),inset 0 0 0 1px rgb(255 255 255 / 22%)}
+        .pe-orb{display:block;width:24px;aspect-ratio:1;flex:none;border-radius:50%;background:var(--pc-orb),var(--ball);box-shadow:0 1px 4px rgb(0 0 0 / 45%),inset 0 0 0 1px rgb(255 255 255 / 22%)}
         .pe-controls{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:9px;padding-top:9px;border-top:1px solid var(--pc-line-soft)}
         .pe-palette-panel .pe-control{min-height:34px;padding:4px 6px;border:0;color:var(--pc-soft);background:var(--pc-velvet);font-size:12.5px;font-weight:500}
         .pe-palette-panel .pe-cancel{grid-column:1/-1;min-height:30px;background:transparent;color:var(--pc-muted)}
@@ -905,7 +905,7 @@ const PCOLPractice = (() => {
           .pe-palette-panel .pe-ball-button[aria-pressed="true"]:enabled:hover{background:rgb(240 168 48 / 22%);color:var(--pc-amber)}
           .pe-palette-panel .pe-cancel:enabled:hover{background:transparent;color:var(--pc-text);text-decoration:underline;text-underline-offset:.25em}}
         @media(pointer:coarse){.pe-palette-panel .pe-ball-button,.pe-palette-panel .pe-control,.pe-heading,.pe-palette-panel .pe-disclosure{min-height:44px}.pe-strip{grid-template-columns:1fr 44px}.pe-palette-panel[data-folded="true"]{width:118px}}
-        @media(max-width:520px),(max-height:490px){.pe-palette-panel{width:226px;max-height:calc(100dvh - 76px)}.pe-ball-list{grid-template-columns:repeat(4,minmax(0,1fr))}.pe-palette-panel .pe-ball-button{flex-direction:column;gap:3px;justify-content:center;min-height:46px;padding:4px 2px;font-size:12px}}
+        @media(max-width:520px),(max-height:490px){.pe-palette-panel{width:226px;max-height:calc(100dvh - 76px)}}
       </style>
       <div class="pe-strip"><h2 class="pe-heading" title="拖动摆球工具">摆球</h2><button type="button" class="pe-disclosure" aria-label="收起摆球工具" aria-controls="pcol-practice-tools" aria-expanded="true"></button></div>
       <div class="pe-body" id="pcol-practice-tools"><div class="pe-caption"><strong class="pe-selected">选择球</strong><span class="pe-red-count"></span></div>
@@ -927,7 +927,7 @@ const PCOLPractice = (() => {
       button.className = 'pe-ball-button';
       button.setAttribute('aria-label', `选择${NAMES[n]}`);
       button.title = NAMES[n];
-      button.innerHTML = `<span class="pe-orb" style="--ball:var(--pc-ball-${n})" aria-hidden="true"></span><span>${NAMES[n]}</span>`;
+      button.innerHTML = `<span class="pe-orb" style="--ball:var(--pc-ball-${n})" aria-hidden="true"></span>`;
       button.addEventListener('click', () => onSelect(n));
       $('.pe-ball-list').append(button);
       buttons.push(button);
@@ -1063,8 +1063,6 @@ const PCOLUIStyle = `
     transition:background-color .14s ease,color .14s ease,box-shadow .14s ease,opacity .14s ease}
   @media(hover:hover){button:enabled:hover{background:var(--pc-velvet-hover);color:var(--pc-text-strong)}}
   button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--pc-amber);outline-offset:2px}
-  button.primary{background:var(--pc-amber-soft);color:var(--pc-text-strong);box-shadow:inset 0 2px var(--pc-amber),inset 0 0 0 1px rgb(240 168 48 / 24%)}
-  @media(hover:hover){button.primary:enabled:hover{background:rgb(240 168 48 / 24%);color:#fff}}
   button:disabled{opacity:.38;cursor:default}
   h2,h3,p,dl,dd{margin:0}
   h2,h3,dt,dd{line-break:strict;text-wrap:balance}
@@ -1082,7 +1080,7 @@ const PCOLTableHUD = (() => {
       --hud-width:min(26.5rem,calc(100vw - 2 * var(--pc-edge-x)));
       position:fixed;left:max(var(--pc-edge-x),env(safe-area-inset-left));
       bottom:max(var(--pc-edge-y),env(safe-area-inset-bottom));z-index:2147483000;
-      max-width:calc(100vw - 2 * var(--pc-edge-x));pointer-events:none
+      width:max-content;max-width:calc(100vw - 2 * var(--pc-edge-x));pointer-events:none
     }
     .bar,.modal>.veil,.pe-palette-panel {pointer-events:auto}
     .bar {
@@ -1096,6 +1094,8 @@ const PCOLTableHUD = (() => {
     .bar:has(~.modal:not(:empty)),.practice-controls:has(~.modal:not(:empty)){display:none}
     .hud-head,.hud-main,.hud-tools,.recording {display:flex;align-items:center}
     .hud-head {min-height:40px}
+    .hud-head,.hud-tools,.hud-head button,.hud-tools button {touch-action:none;user-select:none}
+    .hud-head button:disabled {pointer-events:none}
     .bar button {
       display:inline-flex;align-items:center;justify-content:center;gap:8px;
       min-height:40px;padding:0 15px;border:0;border-radius:var(--pc-r);
@@ -1137,27 +1137,23 @@ const PCOLTableHUD = (() => {
     .hud-phase {width:max-content;padding:2px 8px;border-radius:2px;background:var(--pc-foul);color:#fff;font:700 14px/1.15 var(--pc-display);letter-spacing:.08em}
     .status {color:var(--pc-text-strong);font:600 17px/1.28 var(--pc-font)}
     .hud-signals {display:grid;gap:5px;margin:0 16px 12px;padding:7px 10px;border-radius:var(--pc-r);background:var(--pc-velvet)}
-    .hud-signals>div {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline}
+    .hud-signals>div {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:baseline;justify-content:center;text-align:center}
     .touch-tag,.free-tag {color:var(--pc-info);font:700 14px/1.2 var(--pc-display);letter-spacing:.08em}
     .touch-detail,.free-detail {font-size:13.5px;color:var(--pc-soft)}
     .bar .choose {color:var(--pc-amber)}
     .bar .foul-toggle {color:var(--pc-soft);font-size:14px}
     .bar[data-folded=true] .foul-toggle {color:var(--pc-foul-text);font-weight:600}
     .foul-options {padding:11px 16px 15px;border-top:1px solid var(--pc-line-soft)}
-    .foul-cause {margin:0 0 10px;color:var(--pc-soft);font-size:13.5px;line-height:1.5}
+    .foul-cause {margin:0 0 10px;color:var(--pc-soft);font-size:13.5px;line-height:1.5;text-align:center}
     .foul-cause span {display:inline-block}
     .foul-cause span+span::before {content:' · ';white-space:pre;color:var(--pc-muted)}
     .foul-options .choices {display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:7px}
     .foul-options .choices button {display:grid;place-content:center;justify-items:center;gap:3px;
       min-height:56px;padding:7px 6px;border:0;border-radius:var(--pc-r);background:var(--pc-velvet);white-space:normal}
-    .foul-options .choices button:first-child {background:var(--pc-amber-soft);color:var(--pc-text-strong);
-      box-shadow:inset 0 2px var(--pc-amber),inset 0 0 0 1px rgb(240 168 48 / 22%)}
     .foul-options strong {font:600 15px/1.2 var(--pc-font)}
     .foul-options small {font:400 12px/1.3 var(--pc-font);color:var(--pc-muted)}
-    .foul-options .choices button:first-child small {color:var(--pc-soft)}
     @media(hover:hover){
       .foul-options .choices button:enabled:hover {background:var(--pc-velvet-hover);color:var(--pc-text-strong)}
-      .foul-options .choices button:first-child:enabled:hover {background:rgb(240 168 48 / 24%);color:#fff}
     }
     .foul-notice {padding-top:10px;color:var(--pc-warn);font-size:12.5px}
     @media(max-width:440px){.bar button{padding-inline:12px}.drag{width:10px}.bar .recording{gap:7px;padding-inline:11px}}
@@ -1317,10 +1313,8 @@ const PCOLDialogUI=(()=>{
 .panel[data-kind="foul-verdict"]{box-shadow:inset 0 2px var(--pc-foul),0 24px 60px rgb(0 0 0 / 56%)}
 @keyframes panel-in{from{opacity:0;transform:translateY(5px)}}
 
-.dialog-head{display:grid;gap:4px;padding:20px var(--dialog-pad) 15px;border-bottom:1px solid var(--pc-line)}
-.veil[data-place="center"] .dialog-head{text-align:center;justify-items:center}
-.panel[data-dismissible] .dialog-head{padding-right:56px}
-.veil[data-place="center"] .panel[data-dismissible] .dialog-head{padding-inline:52px}
+.dialog-head{display:grid;justify-items:center;text-align:center;gap:4px;padding:20px var(--dialog-pad) 15px;border-bottom:1px solid var(--pc-line)}
+.panel[data-dismissible] .dialog-head{padding-inline:52px}
 .dialog-kicker{margin:0;color:var(--pc-muted);font:700 12.5px/1.2 var(--pc-display);letter-spacing:.14em;text-transform:uppercase}
 .panel[data-tone="warning"] .dialog-kicker{color:var(--pc-warn)}
 .panel[data-kind="foul-verdict"] .dialog-kicker{color:var(--pc-foul-text)}
@@ -1330,24 +1324,23 @@ const PCOLDialogUI=(()=>{
 .panel[data-kind="practice"] h2{font:700 clamp(34px,4.8vw,44px)/1.02 var(--pc-display);letter-spacing:.04em;text-transform:uppercase}
 .panel:is([data-kind="free-ball"],[data-kind="touching"],[data-kind="free-verdict"]) h2{color:var(--pc-info);font:700 clamp(32px,4.8vw,40px)/1 var(--pc-display);letter-spacing:.04em;text-transform:uppercase}
 .panel .dialog-lead{margin:0;padding:14px var(--dialog-pad) 0;color:var(--pc-soft);line-height:1.6;overflow-wrap:anywhere}
-.veil[data-place="center"] .panel .dialog-lead{text-align:center}
+.panel .dialog-lead{text-align:center;text-wrap:balance}
 .panel .dialog-body{padding:0 var(--dialog-pad)}
 .panel .dialog-body:empty,.panel .choices:empty,.panel [hidden]{display:none!important}
 
 .panel .choices{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-items:stretch;margin:18px 0 0;padding:0 var(--dialog-pad) 22px}
 .panel .choices:is([data-layout="pair"],[data-layout="single"]){padding-top:16px;border-top:1px solid var(--pc-line-soft)}
 .panel .choices[data-layout="single"]{display:flex;justify-content:center}
-.veil[data-place="side"] .panel .choices[data-layout="single"]{justify-content:flex-end}
+.panel .choices[data-layout="practice-actions"]{grid-template-columns:none;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);padding-top:16px;border-top:1px solid var(--pc-line-soft)}
+.panel .choices[data-layout="practice-actions"] button{padding-inline:5px}
 .panel button,.panel summary{font:inherit;touch-action:manipulation}
 .panel .choices button,.panel .difficulty-option{display:flex;align-items:center;justify-content:center;gap:10px;min-width:0;min-height:44px;padding:8px 16px;border:0;border-radius:var(--pc-r);color:var(--pc-text);background:var(--pc-velvet);font:600 15px/1.25 var(--pc-font);text-align:center;cursor:pointer;text-wrap:balance;overflow-wrap:anywhere;transition:background-color .14s ease,color .14s ease,box-shadow .14s ease}
 .panel .choices[data-layout="single"] button{min-width:min(100%,10.5rem)}
-.panel .choices .primary{color:var(--pc-text-strong);background:var(--pc-amber-soft);box-shadow:inset 0 2px var(--pc-amber),inset 0 0 0 1px rgb(240 168 48 / 24%)}
 .veil[data-place="center"] .panel .choices[data-layout="single"] .primary{min-width:8.5rem;padding:7px 26px;border-radius:2px;background:var(--pc-key);color:var(--pc-on-key);box-shadow:none;font:600 16px/1.2 var(--pc-font)}
 .panel button:disabled{opacity:.45;cursor:wait}
 .panel :is(button,a,summary):focus-visible{outline:2px solid var(--pc-amber);outline-offset:2px}
 @media(hover:hover){
   .panel .choices button:enabled:hover,.panel .difficulty-option:enabled:hover{background:var(--pc-velvet-hover);color:var(--pc-text-strong)}
-  .panel .choices .primary:enabled:hover{background:rgb(240 168 48 / 24%);color:#fff}
   .veil[data-place="center"] .panel .choices[data-layout="single"] .primary:enabled:hover{background:#0b0a05;color:var(--pc-key);box-shadow:inset 0 0 0 1px var(--pc-line)}
   .panel .choices [data-role="alternative"]:enabled:hover{background:transparent;color:var(--pc-text-strong);text-decoration:underline;text-underline-offset:.25em}
   .panel .dismiss-dialog:hover{background:var(--pc-velvet-hover);color:var(--pc-text-strong)}
@@ -1355,20 +1348,20 @@ const PCOLDialogUI=(()=>{
 .panel .dismiss-dialog{position:absolute;right:8px;top:8px;display:grid;place-items:center;width:40px;height:40px;padding:0;border:0;border-radius:var(--pc-r);background:transparent;color:var(--pc-muted);font:300 28px/1 var(--pc-font);cursor:pointer}
 
 .panel .dialog-facts{display:grid;grid-template-columns:repeat(var(--fact-cols,3),minmax(0,1fr));margin:16px 0 0;padding:2px 0;border-radius:var(--pc-r);background:var(--pc-velvet)}
-.dialog-facts>div{display:grid;align-content:start;gap:4px;min-width:0;padding:10px 14px 11px}
+.dialog-facts>div{display:grid;align-content:center;justify-items:center;text-align:center;gap:4px;min-width:0;padding:10px 14px 11px}
 .dialog-facts>div+div{border-inline-start:1px solid var(--pc-line-soft)}
 .dialog-facts dt{margin:0;color:var(--pc-muted);font:600 12px/1.25 var(--pc-font);letter-spacing:.04em}
 .dialog-facts dd{margin:0;color:var(--pc-text-strong);font:700 20px/1.2 var(--pc-display);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 
-.panel .choices[data-layout="balls"]{grid-template-columns:repeat(var(--ball-cols,3),minmax(0,1fr));gap:7px}
-.panel .choices[data-layout="balls"] [data-ball]{justify-content:flex-start;padding-inline:13px;background:var(--pc-velvet);white-space:nowrap}
-.panel [data-ball]::before{content:"";flex:none;width:18px;height:18px;border-radius:50%;background:var(--pc-orb),var(--ball);box-shadow:0 2px 6px rgb(0 0 0 / 45%),inset 0 0 0 1px rgb(255 255 255 / 22%)}
+.panel .choices[data-layout="balls"]{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px}
+.panel .choices[data-layout="balls"] [data-ball]{display:grid;place-items:center;flex:none;width:var(--pc-row);height:var(--pc-row);padding:0;border-radius:50%;background:var(--pc-raise-hover)}
+.panel [data-ball]::before{content:"";flex:none;width:24px;height:24px;border-radius:50%;background:var(--pc-orb),var(--ball);box-shadow:0 2px 6px rgb(0 0 0 / 45%),inset 0 0 0 1px rgb(255 255 255 / 22%)}
 .panel [data-ball="1"]{--ball:var(--pc-ball-1)}.panel [data-ball="2"]{--ball:var(--pc-ball-2)}.panel [data-ball="3"]{--ball:var(--pc-ball-3)}.panel [data-ball="4"]{--ball:var(--pc-ball-4)}.panel [data-ball="5"]{--ball:var(--pc-ball-5)}.panel [data-ball="6"]{--ball:var(--pc-ball-6)}.panel [data-ball="7"]{--ball:var(--pc-ball-7)}
 @media(hover:hover){.panel .choices[data-layout="balls"] [data-ball]:enabled:hover{background:color-mix(in srgb,var(--ball) 18%,rgb(255 248 232 / 6%));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ball) 48%,transparent);color:#fff}}
-.panel .choices [data-ball][aria-pressed="true"]{background:color-mix(in srgb,var(--ball) 22%,rgb(240 168 48 / 10%));box-shadow:inset 0 0 0 1.5px var(--pc-amber);color:var(--pc-amber)}
-.panel .choices[data-layout="balls"] [data-role="alternative"]{grid-column:1/-1;justify-content:center;background:transparent;color:var(--pc-soft);font-weight:500}
+.panel .choices[data-layout="balls"] [data-ball][aria-pressed="true"]{background:color-mix(in srgb,var(--ball) 22%,rgb(240 168 48 / 10%));box-shadow:inset 0 0 0 1.5px var(--pc-amber);color:var(--pc-amber)}
+.panel .choices[data-layout="balls"] [data-role="alternative"]{flex:1 0 100%;justify-content:center;background:transparent;color:var(--pc-soft);font-weight:500}
 .panel .choices[data-layout="tiles"]{gap:8px}
-.panel .choices[data-layout="tiles"] button{display:grid;align-content:center;justify-items:start;gap:5px;min-height:94px;padding:15px 18px;text-align:start;background:var(--pc-velvet)}
+.panel .choices[data-layout="tiles"] button{display:grid;align-content:center;justify-items:center;gap:5px;min-height:94px;padding:15px 18px;text-align:center;background:var(--pc-velvet)}
 .panel .choices[data-layout="tiles"] strong{color:var(--pc-text-strong);font:600 19px/1.2 var(--pc-font)}
 .panel .choices[data-layout="rows"]{grid-template-columns:1fr;gap:0;margin:0;padding:0}
 .panel .choices[data-layout="rows"] button{display:flex;justify-content:space-between;align-items:center;gap:16px;min-height:84px;padding:16px 28px;border-radius:0;background:transparent;text-align:start}
@@ -1381,7 +1374,7 @@ const PCOLDialogUI=(()=>{
 .panel .choices[data-layout="rows"] button:first-child:enabled:hover{box-shadow:inset 3px 0 #2bb663}
 .panel button small{display:block;color:var(--pc-soft);font-size:13px;font-weight:400;line-height:1.45;text-wrap:balance}
 .panel .difficulty-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:18px 0 0}
-.panel .difficulty-option{flex-direction:column;align-items:flex-start;gap:4px;min-height:82px;padding:13px 15px;text-align:start;background:var(--pc-velvet);box-shadow:inset 0 2.5px var(--level)}
+.panel .difficulty-option{flex-direction:column;align-items:center;gap:4px;min-height:82px;padding:13px 10px;text-align:center;background:var(--pc-velvet);box-shadow:inset 0 2.5px var(--level)}
 .panel .difficulty-option:nth-child(1){--level:var(--pc-level-1)}.panel .difficulty-option:nth-child(2){--level:var(--pc-level-2)}.panel .difficulty-option:nth-child(3){--level:var(--pc-level-3)}
 .panel .difficulty-option strong{color:var(--pc-text-strong);font:600 18px/1.2 var(--pc-font)}
 .panel .difficulty-option[aria-pressed="true"]{background:var(--pc-amber-soft);box-shadow:inset 0 2.5px var(--pc-amber),inset 0 0 0 1px var(--pc-amber-rim);color:var(--pc-amber)}
@@ -1423,12 +1416,10 @@ const PCOLDialogUI=(()=>{
     if(message)panel.append(make(doc,'p','dialog-lead',message));
     const body=make(doc,'div','dialog-body');if(stats?.length)body.append(facts(doc,stats));panel.append(body);
     const actions=make(doc,'div','choices');actions.setAttribute('data-layout',layout||(choices.length>1?'pair':'single'));
-    const balls=choices.filter(c=>c[3]?.ball).length;
-    if(balls)actions.style.cssText='--ball-cols:'+(balls<=4&&balls!==3?2:3);
     for(const [label,action,primary,config={}] of choices){
-      const b=make(doc,'button',primary?'primary':null,config.detail?null:label);b.type='button';
+      const b=make(doc,'button',primary&&choices.length===1?'primary':null,config.detail||config.ball!=null?null:label);b.type='button';
       if(config.detail)b.append(make(doc,'strong',null,label),make(doc,'small',null,config.detail));
-      if(config.ball)b.setAttribute('data-ball',String(config.ball));
+      if(config.ball!=null){b.setAttribute('data-ball',String(config.ball));b.setAttribute('aria-label',label);b.title=label;}
       if(config.selected!=null)b.setAttribute('aria-pressed',String(config.selected));
       if(config.role)b.setAttribute('data-role',config.role);
       b.onclick=action;actions.append(b);
@@ -4370,9 +4361,9 @@ const PCOLLocalOpponent = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.26.1";
+  const VERSION = "0.27.0";
   const DEVELOPMENT = false;
-  const BUILD_ID = "3ff0d31271aa";
+  const BUILD_ID = "179be5b12830";
   const LOCAL_SYNC_KEY='pcol-local-sync';
   const RECORD_SHOTS_KEY='pcol-record-player-shots';
   if (window.PCOLPatch?.version === VERSION) return;
@@ -4506,55 +4497,72 @@ const PCOLLocalOpponent = (() => {
     if(ctx.ballOn===252)return '任选彩球';
     return '击打'+ballOnLabel(ctx.ballOn);
   }
-  const PANEL_POSITION_KEY = 'pcol-rules-patch:panel-position';
-  function positionPanel(s, x, y) {
-    const rect = s.shadow.querySelector('.bar').getBoundingClientRect();
-    s.panelPosition = {
-      x:Math.max(8,Math.min(x,window.innerWidth-rect.width-8)),
-      y:Math.max(8,Math.min(y,window.innerHeight-rect.height-8))
-    };
-    s.host.style.left = `${s.panelPosition.x}px`;
-    s.host.style.top = `${s.panelPosition.y}px`;
-    s.host.style.bottom = 'auto';
-  }
   function enablePanelDrag(s) {
-    let drag = null;
-    try {
-      const stored = JSON.parse(window.localStorage.getItem(PANEL_POSITION_KEY));
-      if (Number.isFinite(stored?.x) && Number.isFinite(stored?.y)) s.panelPosition = stored;
-    } catch (_) { /* Storage can be disabled; dragging still works this session. */ }
-    for(const handle of [s.ui.drag,s.ui['hud-copy']]){
-    handle.onpointerdown = e => {
-      if (e.button !== 0 || s.modal) return;
-      e.preventDefault();
-      const rect = s.host.getBoundingClientRect();
-      drag = {id:e.pointerId,x:e.clientX,y:e.clientY,left:rect.left,top:rect.top};
-      handle.setPointerCapture(e.pointerId);
-    };
-    handle.onpointermove = e => {
-      if (!drag || drag.id !== e.pointerId) return;
-      positionPanel(s,drag.left+e.clientX-drag.x,drag.top+e.clientY-drag.y);
-    };
-    const finish = e => {
-      if (!drag || drag.id !== e.pointerId) return;
-      drag = null;
-      if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId);
-      try { if (s.panelPosition) window.localStorage.setItem(PANEL_POSITION_KEY,JSON.stringify(s.panelPosition)); } catch (_) {}
-      if (!s.modal) s.g._gView?.canvas?.focus();
-    };
-    handle.onpointerup = finish;
-    handle.onpointercancel = finish;
-    handle.ondblclick = () => {
-      s.panelPosition = null;
-      Object.assign(s.host.style,{left:'',top:'',bottom:''});
-      try { window.localStorage.removeItem(PANEL_POSITION_KEY); } catch (_) {}
-    };
+    function bind(surface, anchor, storageKey, handleSelector, isMessage=false) {
+      let position=null, drag=null, suppressClick=false;
+      const props=['left','top','bottom','position','transform','width','maxWidth','touchAction','userSelect','cursor'];
+      const initialStyle=Object.fromEntries(props.map(name=>[name,anchor.style[name]]));
+      try {
+        const saved=JSON.parse(window.localStorage.getItem(storageKey));
+        if(Number.isFinite(saved?.x)&&Number.isFinite(saved?.y))position=saved;
+      } catch (_) { /* Position remains session-local when storage is disabled. */ }
+      if(isMessage)Object.assign(anchor.style,{touchAction:'none',userSelect:'none',cursor:'grab'});
+      function place(x,y) {
+        const rect=surface.getBoundingClientRect();
+        if(!rect.width||!rect.height)return;
+        position={
+          x:Math.max(8,Math.min(x,window.innerWidth-rect.width-8)),
+          y:Math.max(8,Math.min(y,window.innerHeight-rect.height-8))
+        };
+        if(isMessage)Object.assign(anchor.style,{position:'fixed',transform:'none',width:'max-content',maxWidth:'calc(100% - 16px)'});
+        Object.assign(anchor.style,{left:position.x+'px',top:position.y+'px',bottom:'auto'});
+      }
+      function down(e) {
+        if(!e.isPrimary||e.button!==0)return;
+        suppressClick=false;
+        if(!e.target.closest(handleSelector)||e.target.closest('.close-button'))return;
+        const rect=surface.getBoundingClientRect();
+        drag={id:e.pointerId,x:e.clientX,y:e.clientY,left:rect.left,top:rect.top,moved:false};
+        e.target.setPointerCapture(e.pointerId);
+      }
+      function move(e) {
+        if(!drag||drag.id!==e.pointerId)return;
+        const dx=e.clientX-drag.x,dy=e.clientY-drag.y;
+        if(!drag.moved&&Math.hypot(dx,dy)<6)return;
+        drag.moved=true;place(drag.left+dx,drag.top+dy);
+      }
+      function finish(e) {
+        if(!drag||drag.id!==e.pointerId)return;
+        suppressClick=drag.moved;drag=null;
+        if(!suppressClick)return;
+        try { window.localStorage.setItem(storageKey,JSON.stringify(position)); } catch (_) {}
+        if(s.app._currentController===s.g)s.g._gView.canvas.focus();
+      }
+      function click(e) {
+        if(suppressClick&&e.detail){e.preventDefault();e.stopImmediatePropagation();}
+      }
+      function reset(e) {
+        if(!e.target.closest(isMessage?'.box-head':'.drag,.hud-copy'))return;
+        position=null;
+        for(const key of ['left','top','bottom','position','transform','width','maxWidth'])anchor.style[key]=initialStyle[key];
+        try { window.localStorage.removeItem(storageKey); } catch (_) {}
+      }
+      const listeners=[['pointerdown',down],['pointermove',move],['pointerup',finish],['pointercancel',finish],
+        ['lostpointercapture',finish],['click',click,true],['dblclick',reset]];
+      for(const [name,fn,capture] of listeners)surface.addEventListener(name,fn,capture);
+      const resize=()=>{if(position)place(position.x,position.y);};
+      const observer=new window.ResizeObserver(resize);
+      observer.observe(surface);window.addEventListener('resize',resize);
+      patches.push(()=>{
+        observer.disconnect();window.removeEventListener('resize',resize);
+        for(const [name,fn,capture] of listeners)surface.removeEventListener(name,fn,capture);
+        Object.assign(anchor.style,initialStyle);
+      });
     }
-    const resize = () => { if (s.panelPosition) positionPanel(s,s.panelPosition.x,s.panelPosition.y); };
-    const observer = new window.ResizeObserver(resize);
-    observer.observe(s.shadow.querySelector('.bar'));
-    window.addEventListener('resize',resize);
-    patches.push(() => {observer.disconnect();window.removeEventListener('resize',resize);window.cancelAnimationFrame(s.renderFrame);});
+    bind(s.ui.bar,s.host,'pcol-rules-patch:panel-position','.hud-head,.hud-tools');
+    const message=(s.app._uiLayer||s.g._uiLayer)?._bMsgBox?.element;
+    if(message)bind(message,message,'pcol-rules-patch:message-position','.message-box',true);
+    patches.push(()=>window.cancelAnimationFrame(s.renderFrame));
   }
   function mount(s) {
     if(s.host)return;
@@ -4578,6 +4586,22 @@ const PCOLLocalOpponent = (() => {
     ui.retry.onclick=()=>retryPractice(s);ui.choose.onclick=()=>chooseBall(s);ui.concede.onclick=toolAction(()=>showConcession(s));
     ui['foul-toggle'].onclick=()=>{if(s.pending){s.pending.folded=!s.pending.folded;render(s);s.g._gView.canvas.focus();}};
     ui['hud-more'].onclick=()=>{s.toolsOpen=!s.toolsOpen;render(s);};
+    // PCOL binds game keys directly to its canvas. A pointer-operated tool
+    // can keep that focus while still receiving its normal click or drag.
+    shadow.addEventListener('mousedown',e=>{
+      if(!s.modal&&s.app._currentController===s.g&&e.button===0&&e.target.closest('button'))e.preventDefault();
+    },true);
+    ui.bar.addEventListener('click',e=>{
+      if(e.detail&&!s.modal&&s.app._currentController===s.g&&!nativeUI?.isBlocked)s.g._gView.canvas.focus({preventScroll:true});
+    });
+    const nativeMessage=nativeUI?._bMsgBox?.element;
+    if(nativeMessage){
+      const onClose=e=>{
+        if(e.target.closest('.close-button')&&!s.modal&&!nativeUI.isBlocked)s.g._gView.canvas.focus({preventScroll:true});
+      };
+      nativeMessage.addEventListener('click',onClose);
+      patches.push(()=>nativeMessage.removeEventListener('click',onClose));
+    }
     shadow.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Escape'&&s.toolsOpen&&!s.modal){
       s.toolsOpen=false;render(s);s.g._gView.canvas.focus();
     }});
@@ -4623,7 +4647,7 @@ const PCOLLocalOpponent = (() => {
       setUI(ui.status,'textContent','接手打'+ballOnLabel(pending.result.nextBallOn));
     }
     const touching=live?touchingNotice(s):'';
-    const free=live&&(s.freeBallReview?'待裁定':s.freeBallNominee!=null?'指定'+COLOURS[g._simulator.getBallAtIndex(s.freeBallNominee).number]:s.freeBallAvailable?(s.freeBallDeclined?'按原球打':'可提名'):'');
+    const free=live&&(s.freeBallReview?'待裁定':s.freeBallNominee!=null?'指定'+COLOURS[g._simulator.getBallAtIndex(s.freeBallNominee).number]:s.freeBallAvailable?(s.freeBallDeclined?'按原球打':'可选彩'):'');
     if(human&&model._gState===4&&!custom&&!ended&&!s.shot&&!s.pending&&!replay&&!s.modal&&!nativeBox&&!nativeUI?.isBlocked&&!g._paused&&!s.toolsOpen){
       const warning=s.missReplay?.warned;
       const label=warning?'最后警告':s.hotseat?'玩家 '+(ctx.playerIndex+1):s.practice?'标准练习':'你的回合';
@@ -4641,7 +4665,7 @@ const PCOLLocalOpponent = (() => {
     setUI(ui['foul-options'],'hidden',!pending||!!pending.folded||s.modal);
     const eligible=human&&model._gState===4&&(s.freeBallAvailable||s.freeBallReview||ctx.ballOn===252);
     setUI(ui.choose,'hidden',!eligible);
-    setUI(ui.choose,'textContent',s.freeBallReview?'核定':s.freeBallAvailable?'提名':'选彩');
+    setUI(ui.choose,'textContent',s.freeBallReview?'核定':'选彩');
     setUI(ui.hotseat,'hidden',!home);setUI(ui.practice,'hidden',!home);setUI(ui.ai,'hidden',!home);
     setUI(ui.retry,'hidden',!(live&&s.practice));setUI(ui.retry,'disabled',!canRetryPractice(s));
     setUI(ui['hud-main'],'hidden',!home&&!s.practice&&!pending&&!eligible);
@@ -4669,7 +4693,6 @@ const PCOLLocalOpponent = (() => {
     return s.resultStats.time(performance.now(),ctx.nRounds,ctx.playerIndex,running);
   }
   function closeModal(s) {
-    window.cancelAnimationFrame(s.modalFocusFrame);s.modalFocusFrame=null;
     s.shadow?.querySelector('.modal').replaceChildren();
     if (s.modal) s.g._paused = s.pausedBeforeModal;
     s.modal = false;s.modalKind=null;
@@ -4687,15 +4710,7 @@ const PCOLLocalOpponent = (() => {
     s.modal=true;s.modalKind=spec.kind||'ruling';s.g._paused=true;
     const ui=PCOLDialogUI.open(document,{...spec,close:spec.dismissible?()=>closeModal(s):undefined});
     s.shadow.querySelector('.modal').replaceChildren(ui.veil);
-    // Keep focus work off the stroke-end render. An early pointer choice keeps its own focus.
-    window.cancelAnimationFrame(s.modalFocusFrame);
-    s.modalFocusFrame=window.requestAnimationFrame(()=>{
-      s.modalFocusFrame=window.requestAnimationFrame(()=>{
-        s.modalFocusFrame=null;
-        if(s.modal&&s.shadow.querySelector('.panel')===ui.panel&&!ui.panel.contains(s.shadow.activeElement))
-          (spec.dismissible?ui.heading:ui.actions.querySelector('button')||ui.heading).focus({preventScroll:true});
-      });
-    });
+    ui.heading.focus({preventScroll:true});
     return ui;
   }
   function concessionInfo(s) {
@@ -4792,7 +4807,7 @@ const PCOLLocalOpponent = (() => {
     } else if (s.freeBallAvailable) {
       const on = PCOLCore.ballOnNumbers(m._gContext.ballOn);
       const candidates = balls(s.g).filter(b => b.active && b.n > 0 && !on.includes(b.n));
-      dialog(s,{kind:'free-ball',kicker:'指定本杆目标',title:'FREE BALL',layout:'balls',message:`可指定一颗球，按${ballOnLabel(m._gContext.ballOn)}计分。`,dismissible:true,choices:[
+      dialog(s,{kind:'free-ball',kicker:'选彩',title:'FREE BALL',layout:'balls',message:`可指定一颗球，按${ballOnLabel(m._gContext.ballOn)}计分。`,dismissible:true,choices:[
         ...candidates.map(b => [COLOURS[b.n], () => { s.freeBallNominee = b.i; s.freeBallDeclined = false; closeModal(s); },false,{ball:b.n,selected:s.freeBallNominee===b.i}]),
         ['按原目标球继续', () => { s.freeBallNominee = null; s.freeBallDeclined = true; closeModal(s); },false,{role:'alternative'}]
       ]});
@@ -5595,6 +5610,7 @@ const PCOLLocalOpponent = (() => {
       ['ai3','challenge','挑战','CHALLENGE',9,'略高于你的水平','hard']
     ];
     const HOME_NATIVE_CSS=`
+      .game-box.message-box:has(>.box-head.error-copy) :is(.box-head,.box-body-copy){text-align:center}
       @media(max-height:560px){.game-side-menu.pcol-side-menu{top:12%}.game-side-menu.pcol-side-menu>:not(:last-child){margin-bottom:.85rem}.game-side-menu.pcol-side-menu .label-div-420{font-size:3.2rem;line-height:3.2rem}}
       .game-box.pcol-dif-box{width:min(29.25rem,calc(100% - 24px));background:rgb(16 14 9 / 94%);border-radius:2px;box-shadow:0 24px 60px rgb(0 0 0 / 58%),inset 0 0 0 1px rgb(255 242 214 / 7%)}
       .pcol-dif-box>.box-head{padding:20px 24px 15px;text-align:center;color:#f3f0e6;border-bottom:1px solid rgb(255 242 214 / 13%)}
@@ -5712,9 +5728,10 @@ const PCOLLocalOpponent = (() => {
       finishProfileFrame(s,'finished');
       if(s.practice){
         const choices=[];
-        if(canRetryPractice(s))choices.push(['复位重打最后一杆',()=>retryPractice(s),true]);
+        if(canRetryPractice(s))choices.push(['复位重打最后一杆',()=>retryPractice(s)]);
         choices.push(['重新练习',()=>{closeModal(s);m.reqReset(sim);}]);
-        dialog(s,{kind:'practice-result',title:'练习完成',
+        choices.push(['退出',()=>{closeModal(s);g._onQuitConfirm();}]);
+        dialog(s,{kind:'practice-result',title:'练习完成',layout:'practice-actions',
           stats:[['本次得分',m._players[0].pts],['最高单杆',m._players[0].maxbrk]],choices});
         return;
       }
