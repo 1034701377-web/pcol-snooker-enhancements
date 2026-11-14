@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.26.0
+// @version      0.26.1
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -4370,9 +4370,9 @@ const PCOLLocalOpponent = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.26.0";
+  const VERSION = "0.26.1";
   const DEVELOPMENT = false;
-  const BUILD_ID = "41a950583658";
+  const BUILD_ID = "3ff0d31271aa";
   const LOCAL_SYNC_KEY='pcol-local-sync';
   const RECORD_SHOTS_KEY='pcol-record-player-shots';
   if (window.PCOLPatch?.version === VERSION) return;
@@ -5629,14 +5629,16 @@ const PCOLLocalOpponent = (() => {
           menu.element.classList.add('pcol-side-menu');
           menu.element.insertBefore(duo.element,menu._bns[1].element);
           menu._bns.splice(1,0,duo);
-          if(typeof menu._createTween==='function'){
+          const rebuildTween=()=>{
             menu._tween=menu._createTween();
-            if(menu.isActive){for(const b of menu._bns){b.display=1;b.update?.();}menu._tween.update?.(10);}
-          }
+            menu._tween.onUpdateRequired(()=>menu.requireUpdate());
+            if(menu.isActive)menu._tween.play();
+          };
+          rebuildTween();
           patches.push(()=>{
             delete menu.__pcolEnhanced;menu.element.classList.remove('pcol-side-menu');duo.element.remove();
             const idx=menu._bns.indexOf(duo);if(idx>=0)menu._bns.splice(idx,1);
-            if(typeof menu._createTween==='function')menu._tween=menu._createTween();
+            rebuildTween();
           });
         }
       }
