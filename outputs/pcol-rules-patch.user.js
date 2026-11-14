@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PCOL Snooker Rules Patch
 // @namespace    local.pcol.rules
-// @version      0.27.1
+// @version      0.27.2
 // @description  Snooker rules, celebrations, practice layouts, stroke retry and isolated full-shot trials.
 // @match        http://www.heyzxz.me/pcol/*
 // @match        https://www.heyzxz.me/pcol/*
@@ -4362,9 +4362,9 @@ const PCOLLocalOpponent = (() => {
 
 (() => {
   'use strict';
-  const VERSION = "0.27.1";
+  const VERSION = "0.27.2";
   const DEVELOPMENT = false;
-  const BUILD_ID = "f1d24dcd2c1e";
+  const BUILD_ID = "e78a5fd34610";
   const LOCAL_SYNC_KEY='pcol-local-sync';
   const RECORD_SHOTS_KEY='pcol-record-player-shots';
   if (window.PCOLPatch?.version === VERSION) return;
@@ -5423,6 +5423,9 @@ const PCOLLocalOpponent = (() => {
     .pcol-dif-box .difficulty-item .ai-name small{font:700 11.5px/1 "Saira ExtraCondensed ExCond","Saira ExtraCondensed",sans-serif;letter-spacing:.15em;opacity:.72}
     .pcol-dif-box .difficulty-item .easy{color:#9cb62e}.pcol-dif-box .difficulty-item .normal{color:#dfa938}.pcol-dif-box .difficulty-item .hard{color:#cf523c}
     .pcol-dif-box .difficulty-item .diff-label{position:static;display:grid;justify-items:end;gap:7px;pointer-events:none}
+    .pcol-dif-box .diff-dot{color:#4e4e4e;border-color:currentColor}
+    .pcol-dif-box .diff-dot-full{background:currentColor}
+    .pcol-dif-box .diff-dot-half{background:linear-gradient(to right,currentColor 50%,transparent 50%) border-box}
     .pcol-dif-box .difficulty-item .diff-desp{font:400 13px/1.3 "Microsoft YaHei UI","PingFang SC",sans-serif;color:#b5b0a4;letter-spacing:.02em}
     .pcol-dif-box .difficulty-item[data-selected="true"]{background:rgb(240 168 48 / 7%);box-shadow:inset 3px 0 #f0a830}
     @media(hover:hover){.pcol-dif-box .difficulty-item:not(.disabled):hover{background:rgb(255 244 218 / 9%);color:#f3f0e6;box-shadow:inset 3px 0 #f0a830}}
